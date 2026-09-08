@@ -1,0 +1,198 @@
+schema_version: 1
+debug: false
+log_level: INFO
+
+runtime:
+  run_name: sf73jk43_libero_spatial_task4
+  output_root: ${oc.env:RUNS_ROOT,outputs}
+  output_dir: null
+
+resources:
+  policy_gpu: ${oc.decode:${oc.env:POLICY_GPU,0}}
+  reward_server:
+    gpu: ${oc.decode:${oc.env:REWARD_GPU,0}}
+    host: 127.0.0.1
+    port: ${oc.decode:${oc.env:ROBOMETER_SERVER_PORT,8000}}
+    batch_size: 4
+    max_workers: 1
+    autocast_dtype: bf16
+    use_unsloth: false
+
+reproduction:
+  reference_run_id: sf73jk43
+  reference_date: 2026-08-27
+  recipe_hash: pending
+  fidelity: behavior_locked
+
+env:
+  env_name: libero_spatial
+  task_id: 4
+  task_name: pick_up_the_black_bowl_in_the_top_drawer_of_the_wooden_cabinet_and_place_it_on_the_plate
+  max_episode_steps: 240
+  init_state_source: procedural
+  eval_seed: 0
+  reset_settle_steps: 15
+  train_terminate_on_success: false
+  eval_terminate_on_success: false
+  use_full_state: false
+  use_gt_rewards: false
+  h5_dataset_path: /tmp/unused_libero_online_dsrl.h5
+  dino_image_keys: [observation/image]
+  extra_keys_to_drop: [observation/wrist_image, prompt, language]
+  success_bonus_amount: 0.0
+
+training:
+  num_envs: 1
+  num_rollouts: 500000
+  chunk_size: null
+  use_rnn: false
+  num_offline_steps: 0
+  load_dir: null
+  save_interval: 10000
+  continue_training: false
+  seed: 0
+
+buffer:
+  capacity: 500000
+  sample_ratio: 0.0
+  use_success_fail_buffer: false
+  success_fail_sample_ratio: 0.5
+
+logging:
+  wandb_project: ${oc.env:WANDB_PROJECT,robometer-pi05-sac-dsrl}
+  wandb_entity: ${oc.env:WANDB_ENTITY,null}
+  wandb_offline: ${oc.decode:${oc.env:WANDB_OFFLINE,false}}
+  wandb_log_dir_base: null
+  wandb_name: sf73jk43-libero-spatial-task4
+  wandb_group: sf73jk43-reproduction
+  wandb_tags: [libero, pi05, sac, dsrl, robometer]
+  metric_allowlist:
+    - train/ep_overall_reward
+    - train/ep_overall_training_reward
+    - train/ep_avg_progress_reward
+    - train/ep_avg_success_prob
+    - train/ep_overall_success_rate
+    - train/sim_success_once
+    - train/robometer_detected
+    - train/robometer_success_head_detected
+    - train/robometer_terminal_detected
+    - buffer/total_size
+    - buffer/avg_total_reward
+    - buffer/avg_predicted_progress_reward
+    - online/policy/actor_loss
+    - online/policy/critic_loss
+    - online/policy/q_values_mean
+    - online/policy/target_q_mean
+    - online/policy/actor_chosen_q_mean
+    - online/policy/ent_coef
+    - online/policy/actor_grad_norm
+    - online/policy/critic_grad_norm
+    - online/policy/reward_mean
+    - online/policy/progress_reward_mean
+    - online/policy/success_prob_mean
+    - eval/success_rate
+    - eval/avg_reward
+    - eval/avg_steps
+    - eval/unique_init_states
+
+alg:
+  offline_alg_name: null
+  online_alg_name: sac
+
+eval:
+  eval_freq: 25000
+  eval_num_episodes: 20
+  eval_record_video: false
+  eval_on_first_step: true
+
+model:
+  dinov2_model: ${oc.env:DINOV2_MODEL,assets/dinov2-base}
+  sentence_model: null
+
+dsrl:
+  training_preset: sf73jk43_legacy_control
+  pi05_checkpoint: ${oc.env:PI05_LIBERO_CHECKPOINT,assets/RLinf-Pi05-LIBERO-SFT}
+  config_name: pi05_libero
+  pi05_backend: validated_openpi
+  precision: null
+  noise_dim: 32
+  noise_action_bound: 1.0
+  env_action_dim: 7
+  action_chunk: 5
+  action_exec_len: 5
+  discount_unit: low_level
+  macro_environment_reward: -1.0
+  num_steps: 3
+  target_entropy: -16
+  actor_seed: 42
+  actor_output_init_gain: 0.01
+  force_zero_actor: false
+  noise_source: external
+  reward_autocast_dtype: bf16
+
+reward_model:
+  model_type: robometer
+  model_path: null
+  eval_server_url: http://${resources.reward_server.host}
+  eval_server_port: ${resources.reward_server.port}
+  eval_server_timeout: 120.0
+  num_gpus: 1
+  max_workers: 1
+  batch_size: 4
+  max_frames: 8
+  use_relative_rewards: false
+  add_estimated_reward: true
+  use_success_detection: true
+  success_detection_threshold: 0.925
+  success_detection_duration: 3
+  success_detection_rule: all_consecutive
+  terminal_adjacent_delta_detection: true
+  terminal_adjacent_delta_threshold: 0.0013611419747273127
+  terminal_adjacent_delta_context_frames: 4
+
+online_algorithm:
+  learning_starts: 25000
+  ent_coef: auto
+  target_entropy: auto
+  target_update_interval: 1
+  gamma: 0.99
+  tau: 0.005
+  batch_size: 128
+  num_critics: 5
+  n_critics_to_sample: 2
+  num_critic_updates_per_actor_update: 1
+  num_updates_per_train_step: 1
+  pooled_critic_features: true
+  train_critic_with_entropy: false
+  train_actor_with_entropy: true
+  train_actor_with_kl_divergence: false
+  actor_optimizer_lr: 1.0e-5
+  actor_optimizer_eps: 1.0e-8
+  actor_optimizer_weight_decay: 1.0e-6
+  critic_optimizer_lr: 1.0e-5
+  critic_optimizer_betas: [0.95, 0.999]
+  critic_optimizer_eps: 1.0e-8
+  critic_optimizer_weight_decay: 1.0e-6
+  ent_coef_lr: 3.0e-4
+  ent_coef_update_interval: 1
+  actor_clip_grad_norm: null
+  critic_clip_grad_norm: null
+
+policy:
+  mlp:
+    hidden_dims: [512, 512]
+    activation: relu
+    use_layer_norm: false
+    dropout_rate: 0.0
+  log_std_init: 0
+  log_std_min: -20.0
+  log_std_max: 2.0
+  use_tanh_output: true
+  deterministic: false
+
+value_function:
+  mlp:
+    hidden_dims: [768, 512, 256]
+    activation: relu
+    use_layer_norm: true
+    dropout_rate: 0.0

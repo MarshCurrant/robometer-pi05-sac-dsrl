@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+title: RoboMeter Pi0.5 SAC-DSRL
+message: Please cite this software and the upstream RoboMeter, RLinf, OpenPI, and LIBERO works.
+type: software
+version: 0.1.0
+license: MIT
+repository-code: https://github.com/MarshCurrant/robometer-pi05-sac-dsrl
+authors:
+  - family-names: MarshCurrant

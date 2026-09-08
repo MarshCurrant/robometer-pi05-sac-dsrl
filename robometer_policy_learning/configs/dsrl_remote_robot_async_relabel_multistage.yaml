@@ -1,0 +1,63 @@
+defaults:
+  - dsrl_droid_config
+  - override algorithm@online_algorithm: franka_dsrl_sac
+  - override policy@policy: transformer
+  - override value_function@value_function: transformer
+  - _self_
+  
+# Environment configuration
+env:
+  # Async reward relabeling configuration
+  use_async_reward_relabel: true
+  reward_relabel_batch_size: 1
+  use_vlm_features: true
+  num_stages: 2 # multi-stage tasks
+  image_keys: ["observation/exterior_image_1_left"] # keys for dino conversion in DSRL observation
+  extra_keys_to_drop: ["observation/wrist_image_left", "observation/joint_position", "observation/gripper_position"]
+
+# Replay buffer configuration
+buffer:
+  min_relabeled_ratio: 0.1  # Minimum ratio of relabeled transitions required before sampling
+  save_buffer_on_exit: false # Save buffer to npz file when training exits or killed (Ctrl+C)
+  save_buffer_every: 0 # Save buffer every N env steps (0 to disable)
+  save_buffer_dir: "replay_buffers"  # Directory to save buffer files
+  save_buffer_images: false # WARNING: creates large files! Only enable if you need videos
+  save_buffer_image_keys: ["observation/wrist_image_left", "observation/exterior_image_1_left"]  # Which image keys to save
+
+reward_model:
+  async_reward_relabel_server_address: "localhost:50052"
+  success_detection_duration: 1
+  success_detection_threshold: 0.6
+
+dsrl:
+  noise_action_bound: 1.5
+
+online_algorithm:
+  learning_starts: 1200
+  target_entropy: 0 # -16 in DSRL's original codebase for simulation experiments
+  num_critic_updates_per_actor_update: 2
+  num_updates_per_train_step: 15
+  gamma: 0.99 # automatically take to the power of action_exec_len in train_dsrl.py
+  critic_optimizer_lr: 1e-4
+  num_critics: 4
+  n_critics_to_sample: 2
+  critic_reduction: "min"
+  ent_coef_lr: 1e-4
+
+# Logging configuration
+logging:
+  wandb_name: train_dsrl_droid_async_relabel
+
+model:
+  # dinov2_model: null #"facebook/dinov2-small"
+  dinov2_model: "facebook/dinov2-small"
+  sentence_model: null
+  # image_encoder_type: "impala"
+
+# turn off eval for async buffer
+eval:
+  eval_freq: 1000000000000000 # Evaluation frequency in rollouts 
+  eval_num_episodes: 0  # Number of episodes for evaluation
+  eval_record_video: true  # Whether to record videos during evaluation
+  eval_at_episode_boundary: true  # If true, only evaluate at episode boundaries (auto-enabled for REMOTE_ROBOT)
+  eval_on_first_step: false # If true, evaluate on the first step before any training

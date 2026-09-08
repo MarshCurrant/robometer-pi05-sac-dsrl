@@ -1,0 +1,36 @@
+defaults:
+  - _self_
+  - dsrl_config
+
+mode: learner  # Mode: learner, rollout, or eval
+
+wandb_name: "train_dsrl_distributed"  # Override wandb name for distributed training
+
+# Distributed training configuration
+distributed:
+  # Learner server configuration
+  learner_server:
+    host: "0.0.0.0"
+    port: 50051
+    address: "127.0.0.1:50051"  # Full address (host:port) for clients to connect
+    max_msg_mb: 256  # Maximum message size in MB
+  
+  # Training loop configuration
+  train_target_hz: 0.0  # Target training frequency in Hz (0.0 = no limit)
+  log_interval: 5  # Logging interval in seconds
+  save_interval: null  # Save interval in steps (null = use top-level save_interval)
+  actor_update_freq: 50  # Frequency of actor weight updates to server (in steps)
+  
+  # Rollout worker configuration
+  rollout:
+    flush_every: 32  # Flush buffer every N transitions
+    max_message_mb: 64  # Maximum message size in MB for streaming
+    refresh_secs: 5  # How often to refresh actor weights (in seconds)
+    target_hz: 0.0  # Target rollout frequency in Hz (0.0 = no limit)
+    num_rollouts: 100  # Number of rollouts per cycle
+  
+  # Evaluation worker configuration
+  eval:
+    eval_every: 120  # Evaluation frequency in seconds
+
+

@@ -1,0 +1,16 @@
+{
+  "run_id": "sf73jk43",
+  "task": "libero_spatial/4",
+  "task_name": "pick_up_the_black_bowl_in_the_top_drawer_of_the_wooden_cabinet_and_place_it_on_the_plate",
+  "recorded_low_level_steps": 309250,
+  "configured_low_level_steps": 500000,
+  "best_eval_success_rate": 1.0,
+  "best_eval_steps": [175000, 225000],
+  "last_eval_success_rate": 0.55,
+  "last_eval_step": 300000,
+  "eval_episodes_per_point": 20,
+  "final_buffer_size": 61850,
+  "final_buffer_avg_progress": 0.6527,
+  "final_buffer_avg_total_reward": -0.3473,
+  "interpretation": "The run demonstrated strong improvement but not stable convergence; model selection by held-out evaluation is required."
+}

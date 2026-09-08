@@ -1,0 +1,32 @@
+# RoboMeter paper Appendix E.2, Table XXII: single-stage automatic online RL.
+# Keep this file immutable for paper-aligned runs; use CLI overrides only in
+# configs explicitly named smoke/debug.
+learning_starts: 1200
+ent_coef: "auto"
+target_entropy: 0
+target_update_interval: 1
+gamma: 0.995
+tau: 0.005
+batch_size: 64
+
+num_critics: 4
+n_critics_to_sample: 2
+num_critic_updates_per_actor_update: 4
+critic_reduction: "min"
+num_updates_per_train_step: 10
+
+pooled_critic_features: true
+train_critic_with_entropy: false
+train_actor_with_entropy: true
+train_actor_with_kl_divergence: false
+
+actor_optimizer_lr: 5e-5
+actor_optimizer_eps: 1.0e-8
+actor_optimizer_weight_decay: 1.0e-6
+
+critic_optimizer_lr: 1e-4
+critic_optimizer_betas: [0.95, 0.999]
+critic_optimizer_eps: 1.0e-8
+critic_optimizer_weight_decay: 1.0e-6
+
+ent_coef_lr: 1e-4

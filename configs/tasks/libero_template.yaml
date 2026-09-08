@@ -1,0 +1,15 @@
+# Copy this file, choose a valid suite/task pair, and recalibrate detection on
+# held-out trajectories before training. It inherits no hidden defaults.
+extends: ../reproduction/sf73jk43.yaml
+runtime:
+  run_name: libero_custom_task
+reproduction:
+  fidelity: extension_not_reference_reproduction
+env:
+  env_name: libero_spatial
+  task_id: 0
+  task_name: replace_with_benchmark_task_name
+reward_model:
+  success_detection_threshold: null
+  success_detection_duration: 3
+  terminal_adjacent_delta_threshold: null

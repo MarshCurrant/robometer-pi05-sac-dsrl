@@ -1,0 +1,74 @@
+defaults:
+  - algorithm@offline_algorithm: null # Options: iql, bc
+  - algorithm@online_algorithm: sac
+  - reward_model: null # Options: null, robometer
+  - policy@policy: mlp # Options: mlp, rnn, transformer
+  - value_function@value_function: mlp # Options: mlp, rnn, transformer
+
+# Debug mode
+debug: false
+
+# Environment configuration
+env:
+  env_name: "libero_90"
+  task_id: 28 # task id for libero environment
+  max_episode_steps: 400 # max episode steps for libero environment
+  use_full_state: false  # Use the full state (default: False). If False, only proprioceptive information will be used. If True, no reward relabeling will be performed.
+  use_gt_rewards: true # Use ground truth rewards (default: False). If True, no reward relabeling will be performed. If no reward model is provided, this will be set to True.
+  h5_dataset_path: "/scr/ykorkmaz/rfm_rl/task_28_demos.h5"
+  dino_image_keys: ["observation/image"] # keys for dino conversion in observation
+  extra_keys_to_drop: ["observation/wrist_image", "prompt", "language"] # keys to drop from observation beyond image_keys (default: [])
+  success_bonus_amount: 0.0
+
+# Training configuration
+training:
+  num_envs: 1 # Number of parallel environments
+  num_rollouts: 500_000  # Number of rollouts to train, this is more like env steps
+  chunk_size: null # Action chunking size
+  use_rnn: false  # Use RNN actor and critic
+  num_offline_steps: 100_000  # Number of offline training steps
+  load_dir: null  # Directory to load RL models from (null for no loading)
+  save_interval: 10000  # Save interval in steps
+  continue_training: false  # Continue training from the last checkpoint
+  seed: 0  # Random seed for training
+
+# Replay buffer configuration
+buffer:
+  capacity: 500_000  # Replay buffer capacity
+  sample_ratio: 0.5  # Sample ratio of offline buffer in mixed replay buffer (used only when we do offline-to-online RL)
+  use_success_fail_buffer: false  # If True, create SuccessFailureReplayBuffer
+  success_fail_sample_ratio: 0.5  # Ratio for sampling from success vs failure buffer
+  success_detection_duration: 2  # Number of consecutive time steps to detect success (only used with reward relabeling)
+  success_detection_threshold: 0.65  # Threshold for success detection (only used with reward relabeling)
+  distributed_reward_relabel:
+    enabled: false  # Whether to use distributed reward relabeling
+    server_address: "localhost:50052"  # Address for remote reward relabeling server
+    max_queue_size: 100  # Max queue size for reward relabeling client
+    timeout: 60.0  # Timeout for reward relabeling client
+    flush_interval: 0.1  # Flush interval for reward relabeling client
+
+# Logging configuration
+logging:
+  wandb_project: rfm_rl
+  wandb_entity: clvr
+  wandb_offline: false
+  wandb_log_dir_base: logs/wandb
+  wandb_name: "train_rl"
+  log_level: "INFO"
+
+# Algorithm configuration
+alg:
+  offline_alg_name: iql  # Offline algorithm name (iql, bc, sac)
+  online_alg_name: sac  # Online algorithm name (sac, iql, bc)
+
+# Evaluation configuration
+eval:
+  eval_freq: 10000   # Evaluation frequency in rollouts 
+  eval_num_episodes: 25  # Number of episodes for evaluation
+  eval_record_video: true  # Whether to record videos during evaluation
+  eval_on_first_step: false  # If true, evaluate on the first step before any training
+
+# Model configuration
+model:
+  dinov2_model: "facebook/dinov2-base"
+  sentence_model: null

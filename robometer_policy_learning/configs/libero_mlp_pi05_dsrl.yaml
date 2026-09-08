@@ -1,0 +1,132 @@
+defaults:
+  - _self_
+  - algorithm@offline_algorithm: null
+  - algorithm@online_algorithm: sac
+  - reward_model: robometer
+  - policy@policy: mlp
+  - value_function@value_function: mlp
+
+debug: false
+
+env:
+  # Matches the non-saturated RLinf validation task and procedural reset path.
+  env_name: libero_spatial
+  task_id: 4
+  max_episode_steps: 240
+  init_state_source: procedural
+  eval_seed: 0
+  # RLinf stabilizes every LIBERO reset with 15 zero actions while holding the
+  # gripper open before exposing the first observation to Pi0.5.
+  reset_settle_steps: 15
+  train_terminate_on_success: false
+  # Match RLinf eval: retain success_once but continue until the 240-step limit.
+  eval_terminate_on_success: false
+  use_full_state: false
+  use_gt_rewards: false
+  h5_dataset_path: /tmp/unused_libero_online_dsrl.h5
+  dino_image_keys: [observation/image]
+  extra_keys_to_drop: [observation/wrist_image, prompt, language]
+  success_bonus_amount: 0.0
+
+training:
+  num_envs: 1
+  num_rollouts: 100000
+  chunk_size: null
+  use_rnn: false
+  num_offline_steps: 0
+  load_dir: null
+  save_interval: 10000
+  continue_training: false
+  seed: 0
+
+buffer:
+  capacity: 500000
+  sample_ratio: 0.0
+  use_success_fail_buffer: false
+  success_fail_sample_ratio: 0.5
+
+logging:
+  wandb_project: ${oc.env:WANDB_PROJECT,efficient-wam}
+  wandb_entity: ${oc.env:WANDB_ENTITY,null}
+  wandb_offline: false
+  wandb_log_dir_base: ${oc.env:LIBERO_PI05_DSRL_WANDB_DIR,logs/wandb}
+  wandb_name: libero_spatial_task4_robometer_pi05_dsrl_enhanced_seed0
+  log_level: INFO
+
+alg:
+  offline_alg_name: null
+  online_alg_name: sac
+
+eval:
+  eval_freq: 5000
+  eval_num_episodes: 20
+  eval_record_video: false
+  eval_on_first_step: true
+
+model:
+  dinov2_model: ${oc.env:DINOV2_MODEL,facebook/dinov2-base}
+  sentence_model: null
+
+dsrl:
+  # Empirically validated control run sf73jk43. Keep the optimization contract
+  # explicit so launcher overrides cannot silently turn this into a new ablation.
+  training_preset: sf73jk43_legacy_control
+  rlinf_root: ${oc.env:RLINF_ROOT}
+  pi05_checkpoint: ${oc.env:PI05_LIBERO_CHECKPOINT}
+  config_name: pi05_libero
+  pi05_backend: validated_openpi
+  # Match the validated RLinf step-0 baseline. Mixed-precision training may be
+  # enabled separately after the baseline contract has been verified.
+  precision: null
+  noise_dim: 32
+  noise_action_bound: 1.0
+  env_action_dim: 7
+  # Pi0.5 denoises its checkpoint-native 10-slot horizon, then returns this
+  # many leading actions to LIBERO. Keep this distinct from model horizon.
+  action_chunk: 5
+  action_exec_len: 5
+  # sf73jk43 configured gamma per low-level action and converted it once to the
+  # replay macro transition: gamma_macro = 0.99 ** action_exec_len.
+  discount_unit: low_level
+  # The simulator success label is hidden. Official DSRL stores only the last
+  # low-level sparse reward for a macro action; use the non-success LIBERO step
+  # reward here, then let RoboMeterReplayBuffer add endpoint progress.
+  macro_environment_reward: -1.0
+  num_steps: 3
+  target_entropy: -16
+  # Match RLinf's actor.seed independently of the environment RNG stream.
+  actor_seed: 42
+  actor_output_init_gain: 0.01
+  # Differential gate only: make internal and external actor outputs exactly
+  # zero to compare the frozen Pi0.5 decoder without actor-policy differences.
+  force_zero_actor: false
+  # internal_rlinf is restricted to eval-only differential gates.
+  noise_source: external
+  reward_autocast_dtype: bf16
+
+reward_model:
+  # Legacy task-4 calibration. Current strict-zero-policy revalidation found
+  # high specificity but insufficient recall; retain only for controlled
+  # ablations until a disjoint current-policy calibration is validated.
+  use_success_detection: true
+  success_detection_threshold: 0.94
+  success_detection_duration: 3
+  success_detection_rule: all_consecutive
+  terminal_adjacent_delta_detection: true
+  terminal_adjacent_delta_threshold: 0.002
+  terminal_adjacent_delta_context_frames: 4
+  max_frames: 8
+  use_relative_rewards: false
+  add_estimated_reward: true
+
+online_algorithm:
+  # Preserve one actor/critic update per newly collected macro transition.
+  num_updates_per_train_step: 1
+  num_critic_updates_per_actor_update: 1
+  # Exact optimizer/discount contract of the validated sf73jk43 control.
+  gamma: 0.99
+  ent_coef_update_interval: 1
+  actor_optimizer_lr: 1.0e-5
+  critic_optimizer_lr: 1.0e-5
+  actor_clip_grad_norm: null
+  critic_clip_grad_norm: null

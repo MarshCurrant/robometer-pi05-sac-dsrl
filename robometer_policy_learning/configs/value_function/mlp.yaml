@@ -1,0 +1,12 @@
+#@package _global_
+defaults:
+  - _self_
+  - base
+
+# MLP Value Function Configuration
+mlp:
+  hidden_dims: [768, 512, 256]
+  activation: relu
+  use_layer_norm: true
+  dropout_rate: 0.0
+

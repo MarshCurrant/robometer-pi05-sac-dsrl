@@ -1,0 +1,82 @@
+defaults:
+  - _self_
+  - algorithm@offline_algorithm: null # not used in simpler
+  - algorithm@online_algorithm: franka_dsrl_sac
+  - reward_model: null #robometer
+  - policy@policy: transformer
+  - value_function@value_function: transformer
+
+# Debug mode
+debug: false
+
+# Environment configuration
+env:
+  env_name: "REMOTE_ROBOT"  # LIBERO task suite name, specific to LIBERO
+  use_gt_rewards: false  # Use ground truth rewards (default: False). If True, no reward relabeling will be performed. If no reward model is provided, this will be set to True.
+  image_keys: ["observation/exterior_image_1_left"] # keys for dino conversion in DSRL observation
+  # extra_keys_to_drop: ["observation/exterior_image_1_left", "observation/joint_position", "observation/gripper_position"] # keys to drop from observation beyond dino_image_keys (default: [])
+  extra_keys_to_drop: ["observation/wrist_image_left", "observation/joint_position", "observation/gripper_position"]
+  obs_format: "droid" # "droid" or "widowx"
+
+# Training configuration
+training:
+  num_envs: 1  # Number of parallel environments
+  num_rollouts: 10_000  # Number of rollouts to train, this is env steps
+  chunk_size: 8 # Action chunking size, should be null for MLP or match the action_exec_len of pi0
+  use_rnn: false  # Use RNN actor and critic
+  seed: 0  # Random seed
+  num_offline_steps: 0 # Number of offline training steps
+  load_dir: null  # Directory to load RL models from (null for no loading)
+  save_interval: 1000  # Save interval in steps
+  continue_training: false  # Continue training from the last checkpoint
+  train_after_episode: true # Train only after episode completion
+
+# Replay buffer configuration
+buffer:
+  capacity: 10_000  # Replay buffer capacity
+  sample_ratio: 0.0  # Sample ratio of offline buffer in mixed replay buffer (used only when we do offline-to-online RL)
+
+# Logging configuration
+logging:
+  wandb_project: rfm_rl
+  wandb_entity: null  # **REQUIRED**: Set to your W&B entity/username
+  wandb_offline: false
+  wandb_prefix: offline_only
+  wandb_name: train_dsrl_droid
+  wandb_log_dir_base: logs/wandb
+  log_level: "INFO"
+
+# Algorithm configuration
+alg:
+  offline_alg_name: iql  # Offline algorithm name (iql, bc, sac)
+  online_alg_name: sac  # Online algorithm name (sac, iql, bc)
+
+# Evaluation configuration
+eval:
+  eval_freq: 5000   # Evaluation frequency in rollouts 
+  eval_num_episodes: 4  # Number of episodes for evaluation
+  eval_record_video: true  # Whether to record videos during evaluation
+  eval_at_episode_boundary: true  # If true, only evaluate at episode boundaries (auto-enabled for REMOTE_ROBOT)
+  eval_on_first_step: true  # If true, evaluate on the first step before any training
+
+# Model configuration
+model:
+  dinov2_model: "facebook/dinov2-small"
+  sentence_model: null
+  image_encoder_type: null #"impala"
+
+# Remote Robot Configuration (used when env_name="REMOTE_ROBOT")
+# Works with ngrok/Pinggy tunnels for training on different machines
+remote_robot:
+  host: null  # **REQUIRED**: Robot server hostname (e.g., Pinggy/ngrok tunnel address)
+  port: 6000  # Robot server port (default: 6000, or 443 for Pinggy)
+  connect_timeout: 300.0  # Connection timeout in seconds (5 min default for remote)
+
+# DSRL related parameters
+dsrl:
+  # Pi0 Configuration
+  pi0_checkpoint: "gs://openpi-assets/checkpoints/pi0_droid" # Path to Pi0 checkpoint (REQUIRED)
+  #pi0_checkpoint: "gs://openpi-assets/checkpoints/pi05_droid" # Path to Pi05 checkpoint (REQUIRED)
+  action_exec_len: 8 # How many actions to execute from chunk
+  noise_dim: 32  # Dimension of noise to predict
+  noise_action_bound: 2.0 # Action bound for noise

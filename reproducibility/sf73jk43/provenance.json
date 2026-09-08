@@ -1,0 +1,10 @@
+{
+  "run_id": "sf73jk43",
+  "wandb_program": "scripts/train_libero_mlp_pi05_dsrl.py",
+  "upstream_policy_learning_commit_recorded_by_wandb": "d5fd0b350d08a69ea6c87af3a1c43a0450593c15",
+  "libero_commit": "87edbd1b823e464bc66557d213cc45e9f88aa543",
+  "rlinf_commit": "a3816b596478dcd8a5c69a6ec1468c9519f77b5b",
+  "openpi_source_commit": "b0e3cfbfb1fb46622b4d499fbeeada95d247f4a4",
+  "robometer_commit": "a669dffc241d7d76bec12f36efd4084d914d017c",
+  "important_limit": "The validated entrypoint contained uncommitted changes, so this repository is a behavior-locked reconstruction, not a bitwise source checkout of sf73jk43."
+}

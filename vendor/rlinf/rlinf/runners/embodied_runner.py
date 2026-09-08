@@ -1,0 +1,735 @@
+# Copyright 2025 The RLinf Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import logging
+import os
+import queue
+import shutil
+import threading
+import time
+from collections import defaultdict
+from typing import TYPE_CHECKING, Union
+
+from omegaconf.dictconfig import DictConfig
+
+from rlinf.scheduler import Channel
+from rlinf.scheduler import WorkerGroupFuncResult as Handle
+from rlinf.utils.distributed import ScopedTimer
+from rlinf.utils.logging import get_logger
+from rlinf.utils.metric_logger import MetricLogger
+from rlinf.utils.metric_utils import compute_evaluate_metrics, print_metrics_table
+from rlinf.utils.runner_utils import check_progress
+from rlinf.utils.timers import Timer
+
+logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from rlinf.workers.actor.async_fsdp_sac_policy_worker import (
+        AsyncEmbodiedSACFSDPPolicy,
+    )
+    from rlinf.workers.actor.embodied_fsdp_actor_worker import EmbodiedFSDPActor
+    from rlinf.workers.actor.fsdp_nft_policy_worker import EmbodiedNFTFSDPPolicy
+    from rlinf.workers.actor.fsdp_sac_policy_worker import EmbodiedSACFSDPPolicy
+    from rlinf.workers.env.async_env_worker import AsyncEnvWorker
+    from rlinf.workers.env.env_worker import EnvWorker
+    from rlinf.workers.reward.reward_worker import EmbodiedRewardWorker
+    from rlinf.workers.rollout.hf.async_huggingface_worker import (
+        AsyncMultiStepRolloutWorker,
+    )
+    from rlinf.workers.rollout.hf.huggingface_worker import MultiStepRolloutWorker
+
+
+class EmbodiedRunner:
+    def __init__(
+        self,
+        cfg: DictConfig,
+        actor: Union[
+            "EmbodiedFSDPActor",
+            "EmbodiedNFTFSDPPolicy",
+            "EmbodiedSACFSDPPolicy",
+            "AsyncEmbodiedSACFSDPPolicy",
+        ],
+        rollout: Union["MultiStepRolloutWorker", "AsyncMultiStepRolloutWorker"],
+        env: Union["EnvWorker", "AsyncEnvWorker"],
+        reward: Union["EmbodiedRewardWorker"] = None,
+        critic=None,
+    ):
+        self.cfg = cfg
+        self.actor = actor
+        self.rollout = rollout
+        self.env = env
+        self.critic = critic
+        self.reward = reward
+        self.weight_sync_interval = self.cfg.runner.weight_sync_interval
+        self.overlap_env_bootstrap = bool(
+            self.cfg.runner.get("overlap_env_bootstrap", False)
+        )
+
+        # Step-gated profiling: ``cluster.profiling.steps`` lists the global step
+        profiling_raw = self.cfg.cluster.get("profiling", None)
+        profiling_enabled = profiling_raw is not None and bool(
+            profiling_raw.get("enabled", True)
+        )
+        profile_steps_raw = (
+            profiling_raw.get("steps", None) if profiling_enabled else None
+        )
+        self._profile_all_steps = profiling_enabled and profile_steps_raw is None
+        self._profile_steps: set[int] | None = (
+            {int(s) for s in profile_steps_raw}
+            if profile_steps_raw is not None
+            else None
+        )
+
+        # Data channels
+        self.env_channel = Channel.create("Env")
+        self.rollout_channel = Channel.create("Rollout")
+        self.actor_channel = Channel.create("Actor")
+        if self.reward is not None:
+            self.reward_channel = Channel.create("Reward")
+        else:
+            self.reward_channel = None
+
+        # this timer checks if we should stop training
+        self.run_timer = Timer(None)  # Timer that checks if we should stop training
+
+        self.consumed_samples = 0
+        # the step here is GRPO step
+        self.global_step = 0
+        self._eval_baseline_success_rate: float | None = None
+        self._env_reward_ema: float | None = None
+        self._env_reward_ema_decay = float(
+            self.cfg.runner.get("env_reward_ema_decay", 0.95)
+        )
+        if not 0.0 <= self._env_reward_ema_decay < 1.0:
+            raise ValueError(
+                "runner.env_reward_ema_decay must be in [0, 1), got "
+                f"{self._env_reward_ema_decay}"
+            )
+
+        # compute `max_steps`
+        self.set_max_steps()
+
+        self.timer = ScopedTimer(reduction="max", sync_cuda=False)
+
+        self.logger = get_logger()
+        self.metric_logger = MetricLogger(cfg)
+        self.enable_per_worker_metric_log = bool(
+            self.cfg.runner.get("per_worker_log", False)
+        )
+
+        # Async logging setup
+        self.stop_logging = False
+        self.log_queue = queue.Queue()
+        self.log_thread = threading.Thread(target=self._log_worker, daemon=True)
+        self.log_thread.start()
+
+    def _log_worker(self):
+        """Background thread for processing log messages."""
+        while not self.stop_logging:
+            try:
+                # Wait for log message with timeout
+                log_func, args = self.log_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                log_func(*args)
+            except Exception as e:
+                print(f"Logging error: {e}")
+            finally:
+                self.log_queue.task_done()
+
+    def print_metrics_table_async(
+        self,
+        step: int,
+        total_steps: int,
+        start_time: float,
+        metrics: dict,
+        start_step: int = 0,
+    ):
+        """Async version that puts table printing in queue."""
+        self.log_queue.put(
+            (
+                print_metrics_table,
+                (
+                    step,
+                    total_steps,
+                    start_time,
+                    metrics,
+                    start_step,
+                    self.metric_logger.log_path,
+                ),
+            )
+        )
+
+    def init_workers(self):
+        # create worker in order to decrease the maximum memory usage
+        self.rollout.init_worker().wait()
+        self.actor.init_worker().wait()
+        if self.reward is not None:
+            self.reward.init_worker().wait()
+
+        self.env.init_worker().wait()
+
+        resume_dir = self.cfg.runner.get("resume_dir", None)
+        if resume_dir is None:
+            return
+
+        self.logger.info(f"Resuming training from checkpoint directory {resume_dir}.")
+        actor_checkpoint_path = os.path.join(resume_dir, "actor")
+        assert os.path.exists(actor_checkpoint_path), (
+            f"resume_dir {actor_checkpoint_path} does not exist."
+        )
+        self.actor.load_checkpoint(actor_checkpoint_path).wait()
+        self.global_step = int(resume_dir.split("global_step_")[-1])
+
+    def update_rollout_weights(self):
+        rollout_handle: Handle = self.rollout.sync_model_from_actor()
+        actor_handle: Handle = self.actor.sync_model_to_rollout()
+        actor_handle.wait()
+        rollout_handle.wait()
+
+    def evaluate(self):
+        env_handle: Handle = self.env.evaluate(
+            input_channel=self.env_channel,
+            rollout_channel=self.rollout_channel,
+        )
+        rollout_handle: Handle = self.rollout.evaluate(
+            input_channel=self.rollout_channel,
+            output_channel=self.env_channel,
+        )
+        env_results = env_handle.wait()
+        rollout_handle.wait()
+        eval_metrics_list = [results for results in env_results if results is not None]
+        eval_metrics = compute_evaluate_metrics(eval_metrics_list)
+        return eval_metrics
+
+    def _evaluate_and_log(self, step: int) -> dict:
+        self.update_rollout_weights()
+        eval_metrics = self.evaluate()
+        if "success_once" in eval_metrics:
+            success_rate = float(eval_metrics["success_once"])
+            if self._eval_baseline_success_rate is None:
+                self._eval_baseline_success_rate = success_rate
+            eval_metrics["success_rate"] = success_rate
+            eval_metrics["success_delta_from_step0"] = (
+                success_rate - self._eval_baseline_success_rate
+            )
+        eval_metrics = {f"eval/{key}": value for key, value in eval_metrics.items()}
+        self.metric_logger.log(data=eval_metrics, step=step)
+        return eval_metrics
+
+    def _should_evaluate_on_start(self) -> bool:
+        return bool(self.cfg.runner.get("eval_on_start", False)) and self.global_step == 0
+
+    def _maybe_evaluate_on_start(self) -> dict:
+        if not self._should_evaluate_on_start():
+            return {}
+        self.logger.info("Running step-0 evaluation before collecting training data.")
+        start_time = time.perf_counter()
+        eval_metrics = self._evaluate_and_log(step=0)
+        eval_metrics["eval/wall_time"] = time.perf_counter() - start_time
+        self.metric_logger.log(
+            data={"eval/wall_time": eval_metrics["eval/wall_time"]}, step=0
+        )
+        return eval_metrics
+
+    def _log_ranked_metrics(
+        self,
+        metrics_list: list[dict] | None,
+        step: int,
+        prefix: str,
+        worker_group_name: str,
+        add_prefix: bool = True,
+    ):
+        if not self.enable_per_worker_metric_log or not metrics_list:
+            return
+        for rank, metrics in enumerate(metrics_list):
+            if not metrics:
+                continue
+            metrics_to_log = (
+                {f"{prefix}/{k}": v for k, v in metrics.items()}
+                if add_prefix
+                else metrics
+            )
+            self.metric_logger.log(
+                data=metrics_to_log,
+                step=step,
+                worker_group_name=worker_group_name,
+                rank=rank,
+            )
+
+    def _aggregate_numeric_metrics(self, metrics_list: list[dict] | None) -> dict:
+        if not metrics_list:
+            return {}
+        merged_metrics = defaultdict(list)
+        for metrics in metrics_list:
+            if not metrics:
+                continue
+            for key, value in metrics.items():
+                merged_metrics[key].append(value)
+        return {
+            key: (sum(values) / len(values))
+            for key, values in merged_metrics.items()
+            if values
+        }
+
+    def _process_ranked_numeric_results(
+        self, results: list[dict], metric_field: str
+    ) -> tuple[dict, list[dict]]:
+        metric_list: list[dict] = []
+        per_rank_metrics: dict[int, list[dict]] = defaultdict(list)
+        for result in results:
+            metrics = result.get(metric_field, None)
+            if not metrics:
+                continue
+            metric_list.append(metrics)
+            rank = result.get("rank", None)
+            if rank is not None:
+                per_rank_metrics[int(rank)].append(metrics)
+
+        aggregated_metrics = self._aggregate_numeric_metrics(metric_list)
+        ranked_metrics_list: list[dict] = []
+        if per_rank_metrics:
+            max_rank = max(per_rank_metrics.keys())
+            ranked_metrics_list = [{} for _ in range(max_rank + 1)]
+            for rank, metrics_list in per_rank_metrics.items():
+                ranked_metrics_list[rank] = self._aggregate_numeric_metrics(
+                    metrics_list
+                )
+        return aggregated_metrics, ranked_metrics_list
+
+    def _process_ranked_eval_results(
+        self, results: list[dict], metric_field: str
+    ) -> tuple[dict, list[dict]]:
+        metric_list: list[dict] = []
+        per_rank_metrics: dict[int, list[dict]] = defaultdict(list)
+        for result in results:
+            metrics = result.get(metric_field, None)
+            if not metrics:
+                continue
+            metric_list.append(metrics)
+            rank = result.get("rank", None)
+            if rank is not None:
+                per_rank_metrics[int(rank)].append(metrics)
+
+        aggregated_metrics = (
+            compute_evaluate_metrics(metric_list) if metric_list else {}
+        )
+        ranked_metrics_list: list[dict] = []
+        if per_rank_metrics:
+            max_rank = max(per_rank_metrics.keys())
+            ranked_metrics_list = [{} for _ in range(max_rank + 1)]
+            for rank, metrics_list in per_rank_metrics.items():
+                ranked_metrics_list[rank] = compute_evaluate_metrics(metrics_list)
+        return aggregated_metrics, ranked_metrics_list
+
+    @staticmethod
+    def _split_pipeline_actor_results(
+        results: list[dict] | None,
+    ) -> tuple[list[dict], list[dict]]:
+        if not results:
+            return [], []
+        rollout_metrics = [result.get("rollout_metrics", {}) for result in results]
+        training_metrics = [result.get("training_metrics", {}) for result in results]
+        return rollout_metrics, training_metrics
+
+    def _maybe_eval_and_checkpoint(self, step: int) -> dict:
+        run_val, save_model, _ = check_progress(
+            self.global_step,
+            self.max_steps,
+            self.cfg.runner.val_check_interval,
+            self.cfg.runner.save_interval,
+            1.0,
+            run_time_exceeded=False,
+        )
+
+        eval_metrics = {}
+        if run_val:
+            with self.timer("eval"):
+                eval_metrics = self._evaluate_and_log(step=step)
+
+        if save_model:
+            self._save_checkpoint()
+
+        return eval_metrics
+
+    def _add_env_reward_ema(self, env_metrics: dict) -> None:
+        if "env/reward" not in env_metrics:
+            return
+        reward = float(env_metrics["env/reward"])
+        if self._env_reward_ema is None:
+            self._env_reward_ema = reward
+        else:
+            decay = self._env_reward_ema_decay
+            self._env_reward_ema = (
+                decay * self._env_reward_ema + (1.0 - decay) * reward
+            )
+        env_metrics["env/reward_ema"] = self._env_reward_ema
+
+    def _log_step_metrics(
+        self,
+        step: int,
+        start_time: float,
+        start_step: int,
+        env_handle: Handle,
+        rollout_handle: Handle,
+        actor_training_handle: Handle,
+        reward_handle: Handle | None,
+        actor_rollout_metrics: list[dict],
+        actor_training_metrics: list[dict],
+        eval_metrics: dict,
+    ) -> None:
+        time_metrics = self.timer.consume_durations()
+        time_metrics = {f"time/{k}": v for k, v in time_metrics.items()}
+        env_time_metrics, env_time_metrics_per_rank = env_handle.consume_durations(
+            return_per_rank=True
+        )
+        rollout_time_metrics, rollout_time_metrics_per_rank = (
+            rollout_handle.consume_durations(return_per_rank=True)
+        )
+        actor_time_metrics, actor_time_metrics_per_rank = (
+            actor_training_handle.consume_durations(return_per_rank=True)
+        )
+        time_metrics.update({f"time/env/{k}": v for k, v in env_time_metrics.items()})
+        time_metrics.update(
+            {f"time/rollout/{k}": v for k, v in rollout_time_metrics.items()}
+        )
+        time_metrics.update(
+            {f"time/actor/{k}": v for k, v in actor_time_metrics.items()}
+        )
+        if self.reward is not None:
+            assert reward_handle is not None
+            reward_time_metrics, reward_time_metrics_per_rank = (
+                reward_handle.consume_durations(return_per_rank=True)
+            )
+            time_metrics.update(
+                {f"time/reward/{k}": v for k, v in reward_time_metrics.items()}
+            )
+
+        env_results = env_handle.wait()
+        env_results_list = [results for results in env_results if results is not None]
+        env_metrics = compute_evaluate_metrics(env_results_list)
+        env_metrics = {f"env/{k}": v for k, v in env_metrics.items()}
+        self._add_env_reward_ema(env_metrics)
+        ranked_env_results = [
+            {"rank": rank, "env": rank_metrics}
+            for rank, rank_metrics in enumerate(env_results)
+            if rank_metrics is not None
+        ]
+        _, env_metrics_per_rank = self._process_ranked_eval_results(
+            ranked_env_results, metric_field="env"
+        )
+
+        rollout_metrics = {
+            f"rollout/{k}": v
+            for k, v in self._aggregate_numeric_metrics(actor_rollout_metrics).items()
+        }
+        training_metrics = {
+            f"train/{k}": v
+            for k, v in self._aggregate_numeric_metrics(actor_training_metrics).items()
+        }
+
+        self.metric_logger.log(env_metrics, step)
+        self.metric_logger.log(rollout_metrics, step)
+        self.metric_logger.log(time_metrics, step)
+        self.metric_logger.log(training_metrics, step)
+        self._log_ranked_metrics(
+            metrics_list=actor_rollout_metrics,
+            step=step,
+            prefix="rollout",
+            worker_group_name=self.actor.worker_group_name,
+        )
+        self._log_ranked_metrics(
+            metrics_list=actor_training_metrics,
+            step=step,
+            prefix="train",
+            worker_group_name=self.actor.worker_group_name,
+        )
+        self._log_ranked_metrics(
+            metrics_list=actor_time_metrics_per_rank,
+            step=step,
+            prefix="time/actor",
+            worker_group_name=self.actor.worker_group_name,
+        )
+        self._log_ranked_metrics(
+            metrics_list=rollout_time_metrics_per_rank,
+            step=step,
+            prefix="time/rollout",
+            worker_group_name=self.rollout.worker_group_name,
+        )
+        self._log_ranked_metrics(
+            metrics_list=env_time_metrics_per_rank,
+            step=step,
+            prefix="time/env",
+            worker_group_name=self.env.worker_group_name,
+        )
+        self._log_ranked_metrics(
+            metrics_list=env_metrics_per_rank,
+            step=step,
+            prefix="env",
+            worker_group_name=self.env.worker_group_name,
+        )
+        if self.reward is not None:
+            self._log_ranked_metrics(
+                metrics_list=reward_time_metrics_per_rank,
+                step=step,
+                prefix="time/reward",
+                worker_group_name=self.reward.worker_group_name,
+            )
+
+        logging_metrics = time_metrics
+        logging_metrics.update(eval_metrics)
+        logging_metrics.update(env_metrics)
+        logging_metrics.update(rollout_metrics)
+        logging_metrics.update(training_metrics)
+
+        self.print_metrics_table_async(
+            step - 1, self.max_steps, start_time, logging_metrics, start_step
+        )
+
+    def _finish_run(self) -> None:
+        # Drain asynchronous logs while their backend is still open. Closing W&B
+        # first can make queued log calls fail and leave queue.join() blocked.
+        self.log_queue.join()
+        self.stop_logging = True
+        self.log_thread.join(timeout=1.0)
+        self.metric_logger.finish()
+
+    def _should_profile_step(self, step_idx: int) -> bool:
+        return self._profile_all_steps or (
+            self._profile_steps is not None and step_idx in self._profile_steps
+        )
+
+    def _open_profiling_window(self, step_idx: int) -> None:
+        """Dispatch ``start_profile`` to all compute worker groups for this step."""
+        self.logger.info(f"Opening profiling window at step {step_idx}")
+        self.actor.start_profile(step_idx).wait()
+        self.rollout.start_profile(step_idx).wait()
+        self.env.start_profile(step_idx).wait()
+
+    def _close_profiling_window(self, step_idx: int) -> None:
+        """Dispatch ``stop_profile`` to all compute worker groups."""
+        self.actor.stop_profile().wait()
+        self.rollout.stop_profile().wait()
+        self.env.stop_profile().wait()
+        self.logger.info(f"Closed profiling window at step {step_idx}")
+
+    def run(self):
+        if self.cfg.runner.get("use_training_pipeline", False):
+            return self.run_pipeline()
+
+        self._maybe_evaluate_on_start()
+        start_step = self.global_step
+        start_time = time.time()
+        for _step in range(start_step, self.max_steps):
+            # set global step
+            self.actor.set_global_step(self.global_step).wait()
+            self.rollout.set_global_step(self.global_step).wait()
+
+            profiled_step = (
+                self.global_step
+                if self._should_profile_step(self.global_step)
+                else None
+            )
+            if profiled_step is not None:
+                self._open_profiling_window(profiled_step)
+
+            with self.timer("step", trace_args={"step_idx": _step}):
+                with self.timer("sync_weights"):
+                    if _step % self.weight_sync_interval == 0:
+                        self.update_rollout_weights()
+                with self.timer("generate_rollouts"):
+                    env_handle: Handle = self.env.interact(
+                        input_channel=self.env_channel,
+                        rollout_channel=self.rollout_channel,
+                        reward_channel=self.reward_channel,
+                        actor_channel=self.actor_channel,
+                    )
+                    rollout_handle: Handle = self.rollout.generate(
+                        input_channel=self.rollout_channel,
+                        output_channel=self.env_channel,
+                    )
+                    reward_handle = None
+                    if self.reward is not None:
+                        reward_handle: Handle = self.reward.compute_rewards(
+                            input_channel=self.reward_channel,
+                            output_channel=self.env_channel,
+                        )
+                    self.actor.recv_rollout_trajectories(
+                        input_channel=self.actor_channel
+                    ).wait()
+                    rollout_handle.wait()
+                    if self.reward is not None:
+                        reward_handle.wait()
+
+                # compute advantages and returns.
+                with self.timer("cal_adv_and_returns"):
+                    actor_rollout_metrics = (
+                        self.actor.compute_advantages_and_returns().wait()
+                    )
+
+                # actor training.
+                with self.timer("actor_training"):
+                    actor_training_handle: Handle = self.actor.run_training()
+                    env_bootstrap_handle: Handle | None = None
+                    if self.overlap_env_bootstrap and _step + 1 < self.max_steps:
+                        env_bootstrap_handle = self.env.prefetch_train_bootstrap(
+                            rollout_channel=self.rollout_channel
+                        )
+
+                    actor_training_metrics = actor_training_handle.wait()
+                    if env_bootstrap_handle is not None:
+                        env_bootstrap_handle.wait()
+
+                self.global_step += 1
+                eval_metrics = self._maybe_eval_and_checkpoint(self.global_step)
+
+            if profiled_step is not None:
+                self._close_profiling_window(profiled_step)
+
+            self._log_step_metrics(
+                step=self.global_step,
+                start_time=start_time,
+                start_step=start_step,
+                env_handle=env_handle,
+                rollout_handle=rollout_handle,
+                actor_training_handle=actor_training_handle,
+                reward_handle=reward_handle,
+                actor_rollout_metrics=actor_rollout_metrics,
+                actor_training_metrics=actor_training_metrics,
+                eval_metrics=eval_metrics,
+            )
+
+        self._finish_run()
+
+    def run_pipeline(self):
+        self._maybe_evaluate_on_start()
+        start_step = self.global_step
+        start_time = time.time()
+        for _step in range(start_step, self.max_steps):
+            # set global step
+            self.actor.set_global_step(self.global_step).wait()
+            self.rollout.set_global_step(self.global_step).wait()
+
+            profiled_step = (
+                self.global_step
+                if self._should_profile_step(self.global_step)
+                else None
+            )
+            if profiled_step is not None:
+                self._open_profiling_window(profiled_step)
+
+            with self.timer("step", trace_args={"step_idx": _step}):
+                with self.timer("sync_weights"):
+                    if _step % self.weight_sync_interval == 0:
+                        self.update_rollout_weights()
+                env_handle: Handle = self.env.interact(
+                    input_channel=self.env_channel,
+                    rollout_channel=self.rollout_channel,
+                    reward_channel=self.reward_channel,
+                    actor_channel=self.actor_channel,
+                )
+                rollout_handle: Handle = self.rollout.generate(
+                    input_channel=self.rollout_channel,
+                    output_channel=self.env_channel,
+                )
+                reward_handle = None
+                if self.reward is not None:
+                    reward_handle: Handle = self.reward.compute_rewards(
+                        input_channel=self.reward_channel,
+                        output_channel=self.env_channel,
+                    )
+                # actor training.
+                actor_training_handle: Handle = self.actor.run_training(
+                    input_channel=self.actor_channel
+                )
+                with self.timer("generate_rollouts"):
+                    rollout_handle.wait()
+                    if self.reward is not None:
+                        reward_handle.wait()
+
+                env_bootstrap_handle: Handle | None = None
+                if self.overlap_env_bootstrap and _step + 1 < self.max_steps:
+                    env_bootstrap_handle = self.env.prefetch_train_bootstrap(
+                        rollout_channel=self.rollout_channel
+                    )
+
+                actor_results = actor_training_handle.wait()
+                actor_rollout_metrics, actor_training_metrics = (
+                    self._split_pipeline_actor_results(actor_results)
+                )
+                if env_bootstrap_handle is not None:
+                    env_bootstrap_handle.wait()
+
+                self.global_step += 1
+                eval_metrics = self._maybe_eval_and_checkpoint(self.global_step)
+
+            if profiled_step is not None:
+                self._close_profiling_window(profiled_step)
+
+            self._log_step_metrics(
+                step=self.global_step,
+                start_time=start_time,
+                start_step=start_step,
+                env_handle=env_handle,
+                rollout_handle=rollout_handle,
+                actor_training_handle=actor_training_handle,
+                reward_handle=reward_handle,
+                actor_rollout_metrics=actor_rollout_metrics,
+                actor_training_metrics=actor_training_metrics,
+                eval_metrics=eval_metrics,
+            )
+
+        self._finish_run()
+
+    def _save_checkpoint(self):
+        self.logger.info(f"Saving checkpoint at step {self.global_step}.")
+        base_output_dir = os.path.join(
+            self.cfg.runner.logger.log_path,
+            self.cfg.runner.logger.experiment_name,
+            f"checkpoints/global_step_{self.global_step}",
+        )
+        actor_save_path = os.path.join(base_output_dir, "actor")
+        os.makedirs(actor_save_path, exist_ok=True)
+        self.actor.save_checkpoint(actor_save_path, self.global_step).wait()
+        self._prune_old_checkpoints(os.path.dirname(base_output_dir))
+
+    def _prune_old_checkpoints(self, checkpoint_root: str) -> None:
+        max_to_keep = int(self.cfg.runner.get("max_checkpoints_to_keep", 0))
+        if max_to_keep <= 0 or not os.path.isdir(checkpoint_root):
+            return
+        checkpoints = []
+        for entry in os.scandir(checkpoint_root):
+            if not entry.is_dir() or not entry.name.startswith("global_step_"):
+                continue
+            try:
+                step = int(entry.name.removeprefix("global_step_"))
+            except ValueError:
+                continue
+            checkpoints.append((step, entry.path))
+        checkpoints.sort()
+        for _, checkpoint_path in checkpoints[:-max_to_keep]:
+            self.logger.info(f"Pruning old checkpoint {checkpoint_path}.")
+            shutil.rmtree(checkpoint_path)
+
+    def set_max_steps(self):
+        self.num_steps_per_epoch = 1
+        self.max_steps = self.num_steps_per_epoch * self.cfg.runner.max_epochs
+
+        if (max_steps := self.cfg.runner.get("max_steps", -1)) >= 0:
+            self.max_steps = min(self.max_steps, max_steps)
+
+    @property
+    def epoch(self):
+        return self.global_step // self.num_steps_per_epoch

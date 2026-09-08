@@ -1,0 +1,75 @@
+defaults:
+  - _self_
+  - policy@policy: mlp 
+  - value_function@value_function: mlp
+  - algorithm@online_algorithm: libero_dsrl_sac
+  - optional reward_model: null
+
+# Debug mode
+debug: false
+
+# Reward model (null means no reward model)
+reward_model: null
+
+# Environment configuration
+env:
+  env_name: "libero_90"
+  task_id: 57
+  use_gt_rewards: false
+  max_episode_steps: 400
+  image_keys: ["observation/image"]
+
+# Training configuration
+training:
+  num_envs: 1
+  num_rollouts: 50_000
+  chunk_size: null
+  use_rnn: false
+  seed: 0
+  num_offline_steps: 0
+  load_dir: null
+  save_interval: 10000
+  continue_training: false
+
+# Replay buffer configuration
+buffer:
+  capacity: 100_000
+  sample_ratio: 0.0
+  use_success_fail_buffer: false
+  success_fail_sample_ratio: 0.5
+
+# Logging configuration
+logging:
+  wandb_project: rfm_rl
+  wandb_entity: clvr
+  wandb_offline: false
+  wandb_prefix: online
+  wandb_name: train_dsrl_libero_new
+  wandb_log_dir_base: logs/wandb
+  log_level: "INFO"
+
+# Algorithm configuration
+alg:
+  offline_alg_name: null
+  online_alg_name: sac
+
+# Evaluation configuration
+eval:
+  eval_freq: 10000
+  eval_num_episodes: 25
+  eval_record_video: true
+  eval_on_first_step: true
+  eval_at_episode_boundary: false
+
+# Model configuration
+model:
+  dinov2_model: "facebook/dinov2-small"
+  sentence_model: null
+  image_encoder_type: "impala"
+
+# DSRL related parameters
+dsrl:
+  noise_dim: 32
+  noise_action_bound: 1.0
+  pi0_checkpoint: "gs://openpi-assets/checkpoints/pi0_libero/"
+  action_exec_len: 20

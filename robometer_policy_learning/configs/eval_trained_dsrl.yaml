@@ -1,0 +1,70 @@
+# Trained DSRL Policy Evaluation Configuration
+# Examples (from repo root):
+#   uv run python scripts/eval_trained_dsrl.py policy_checkpoint="<PATH_TO_CHECKPOINT.pt>"
+#   uv run python scripts/eval_trained_dsrl.py policy_checkpoint="./outputs/.../checkpoints/actor.pt" \
+#       logging.wandb_name="<your-eval-run>" server.host=localhost server.port=6000
+
+# Policy checkpoint (REQUIRED)
+policy_checkpoint: null  # Path to trained DSRL policy checkpoint
+
+# Environment configuration (defaults to DROID remote robot)
+env:
+  env_type: "remote_robot"  # "simpler", "remote_robot", or "libero"
+  env_name: null  # For libero: "libero_10", etc.
+  task_id: 0  # For libero: task ID
+  obs_format: "droid"  # "droid" or "widowx" (for remote_robot)
+  use_vlm_features: true
+  num_stages: 2 # multi-stage tasks
+  image_keys: ["observation/exterior_image_1_left"] # keys for dino conversion in DSRL observation
+  extra_keys_to_drop: [ "observation/wrist_image_left", "observation/joint_position", "observation/gripper_position"]
+  max_episode_steps: 600  # For libero
+
+# Remote robot/server connection
+server:
+  host: "jessezhang2.a.pinggy.link"
+  port: 25363
+
+# Pi0 configuration
+pi0:
+  checkpoint: "gs://openpi-assets/checkpoints/pi0_droid"
+  config_name: null
+  action_exec_len: 8  # Number of actions to execute from each chunk
+  noise_dim: 32  # Dimension of noise vector (DSRL policy output)
+  noise_action_bound: 1.5  # Action bound for noise (used in DummyDSRLEnv)
+  use_vlm_features: true # Use VLM features in DSRL observation space
+
+# Evaluation settings
+eval:
+  num_episodes: 20  # Number of evaluation episodes
+  record_video: true  # Record evaluation videos
+  results_path: null  # Optional per-episode JSONL output
+  gamma: 0.99  # Discount factor
+
+# Logging configuration
+logging:
+  wandb_enable: true
+  wandb_project: rfm_rl
+  wandb_entity: clvr
+  wandb_offline: false
+  wandb_name: eval_trained_dsrl
+  wandb_log_dir_base: logs/wandb
+  wandb_group: null
+  wandb_job_type: eval
+  wandb_tags: ["eval"]
+
+# Model configuration (optional feature extractors)
+model:
+  dinov2_model: "facebook/dinov2-small"  # DINOv2 model for image embedding (null to disable)
+  sentence_model: null  # Sentence transformer for language (null to disable)
+
+# Policy architecture (used if checkpoint doesn't contain config)
+policy:
+  hidden_sizes: [256, 256]
+  use_layer_norm: true
+
+training:
+  use_rnn: false
+
+# Device and seed
+device: "cuda"
+seed: 42

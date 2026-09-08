@@ -1,0 +1,9 @@
+*.py text eol=lf
+*.sh text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+
+# Preserve imported source snapshots byte-for-byte and classify them as vendored.
+robometer_policy_learning/** linguist-vendored -whitespace
+vendor/** linguist-vendored -whitespace

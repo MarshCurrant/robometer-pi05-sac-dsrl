@@ -1,0 +1,101 @@
+# Paper-aligned RoboMeter-DSRL applied to RoboTwin's dual-arm ALOHA domain.
+# Algorithm settings reproduce Appendix E.2 Table XXII. The 14-D bimanual
+# observation/action interface is an explicit environment adaptation and is
+# recorded in W&B/Hydra's resolved config.
+defaults:
+  - dsrl_droid_config
+  - override algorithm@online_algorithm: franka_dsrl_sac_paper_table_xxii
+  - override policy@policy: transformer
+  - override value_function@value_function: transformer
+  - _self_
+
+env:
+  env_name: "REMOTE_ROBOT"
+  obs_format: "robotwin"
+  use_gt_rewards: false
+  use_async_reward_relabel: true
+  reward_relabel_batch_size: 1
+  num_stages: 1
+  # RoboMeter and the SAC actor/critic use the main camera. Pi0 still receives
+  # cam_high plus both wrist cameras and proprioception in Pi0Wrapper.
+  image_keys: ["observation.images.cam_high"]
+  extra_keys_to_drop:
+    - "observation.images.cam_left_wrist"
+    - "observation.images.cam_right_wrist"
+    - "observation.images.wrist_pair"
+    - "observation.state"
+
+training:
+  num_envs: 1
+  num_rollouts: 10000
+  chunk_size: 8
+  use_rnn: false
+  seed: 0
+  num_offline_steps: 0
+  load_dir: null
+  save_interval: 1000
+  continue_training: false
+  train_after_episode: true
+
+buffer:
+  capacity: 10000
+  sample_ratio: 0.0
+  min_relabeled_ratio: 0.1
+  save_buffer_on_exit: true
+  save_buffer_every: 1000
+  save_buffer_dir: "replay_buffers"
+  save_buffer_images: false
+  save_buffer_image_keys: ["observation.images.cam_high"]
+
+reward_model:
+  async_reward_relabel_server_address: "localhost:50052"
+  use_success_detection: true
+  success_detection_duration: 1
+  # Best held-out RoboTwin setting measured in the previous 5-task study.
+  success_detection_threshold: 0.4189453125
+  success_detection_mode: "enhanced_terminal_delta"
+  terminal_adjacent_delta_detection: true
+  terminal_adjacent_delta_threshold: 0.0011965265148319304
+  wait_for_completion_on_episode_end: true
+  use_relative_rewards: false
+
+model:
+  dinov2_model: ${oc.env:DINOV2_MODEL_PATH}
+  sentence_model: null
+
+dsrl:
+  pi0_checkpoint: ${oc.env:ROBOTWIN_PI0_CHECKPOINT}
+  pi0_config_name: "pi0_base_aloha_robotwin_lora"
+  action_exec_len: 8
+  noise_dim: 32
+  noise_action_bound: 2.0
+  use_vlm_features: true
+
+remote_robot:
+  host: ${oc.env:ROBOTWIN_SERVER_HOST,localhost}
+  port: ${oc.env:ROBOTWIN_SERVER_PORT,6000}
+  connect_timeout: 300.0
+
+eval_remote_robot:
+  host: ${oc.env:ROBOTWIN_EVAL_SERVER_HOST,localhost}
+  port: ${oc.env:ROBOTWIN_EVAL_SERVER_PORT,6001}
+  connect_timeout: 300.0
+
+logging:
+  wandb_project: ${oc.env:WANDB_PROJECT,efficient-wam}
+  wandb_entity: ${oc.env:WANDB_ENTITY,3268587895-fudan-university-school-of-management}
+  wandb_offline: false
+  wandb_prefix: online
+  wandb_name: ${oc.env:WANDB_RUN_NAME,robometer_pi0_robotwin_paper}
+  wandb_log_dir_base: ${oc.env:ROBOMETER_PI0_RUN_ROOT,outputs/robotwin_paper}/wandb
+  log_level: "INFO"
+
+eval:
+  # Separate simulator socket: training uses enhanced RoboMeter termination;
+  # evaluation uses only sticky RoboTwin environment success on a fixed random
+  # held-out seed pool.
+  eval_freq: 10000
+  eval_num_episodes: 20
+  eval_record_video: false
+  eval_at_episode_boundary: false
+  eval_on_first_step: true

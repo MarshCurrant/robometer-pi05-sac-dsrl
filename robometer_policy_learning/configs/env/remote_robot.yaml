@@ -1,0 +1,20 @@
+# Remote Robot Environment Configuration
+# Override with command line: python scripts/train_dsrl.py +env=remote_robot
+#
+# Usage with ngrok:
+#   1. Start robot server: python robots/widowx_remote_server.py --prompt "pick up the block"
+#   2. Start ngrok: ngrok tcp 6000  (note the URL, e.g., 0.tcp.ngrok.io:12345)
+#   3. Train: python scripts/train_dsrl.py env_name=REMOTE_ROBOT remote_robot.host=0.tcp.ngrok.io remote_robot.port=12345
+#
+# Usage with Pinggy:
+#   1. Start robot server: python robots/widowx_remote_server.py --prompt "pick up the block"
+#   2. Start Pinggy: ssh -p 443 -R0:localhost:6000 a.pinggy.io  (note the subdomain)
+#   3. Train: python scripts/train_dsrl.py env_name=REMOTE_ROBOT remote_robot.host=xyz.a.pinggy.io remote_robot.port=443
+
+env_name: "REMOTE_ROBOT"
+
+remote_robot:
+  host: "localhost"  # Override with tunnel URL
+  port: 6000         # Override with tunnel port
+  connect_timeout: 300.0  # 5 minutes for remote connections
+

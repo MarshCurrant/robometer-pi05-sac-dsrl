@@ -1,0 +1,21 @@
+# RoboReward baseline model configuration
+# RoboReward predicts discrete progress scores (1-5) for task completion
+
+# Model type
+model_type: "roboreward"
+
+# Model path (HuggingFace model ID)
+# Options: "teetone/RoboReward-8B" (better quality) or "teetone/RoboReward-4B" (faster)
+model_path: "teetone/RoboReward-8B"
+
+# RoboReward-specific settings
+roboreward_max_new_tokens: 128  # Max tokens for generation
+roboreward_use_unsloth: false   # Use unsloth for faster inference (requires unsloth package)
+
+# Note: RoboReward does not use the following settings (they are for Robometer only):
+# - use_relative_rewards
+# - eval_server_*
+# - num_gpus
+# - max_workers
+# - batch_size
+

@@ -1,0 +1,68 @@
+defaults:
+  - algorithm@offline_algorithm: null # not used in simpler
+  - algorithm@online_algorithm: bridge_dsrl_sac
+  - reward_model: null #robometer
+
+num_envs: 1  # Number of parallel environments
+num_rollouts: 10_000  # Number of rollouts to train, this is more like env steps
+buffer_capacity: 10_000  # Replay buffer capacity
+chunk_size: null # Action chunking size, should be null for MLP or match the action_exec_len of pi0
+use_rnn: false  # Use RNN actor and critic
+seed: 0  # Random seed
+
+
+num_offline_steps: 0 # Number of offline training steps
+sample_ratio: 0.0  # Sample ratio of offline buffer in mixed replay buffer (used only when we do offline-to-online RL)
+
+load_dir: null  # Directory to load RL models from (null for no loading)
+save_interval: 1000  # Save interval in steps
+continue_training: false  # Continue training from the last checkpoint
+
+wandb_project: rfm_rl
+wandb_entity: clvr
+wandb_offline: false
+wandb_prefix: offline_only
+wandb_name: train_dsrl_bridge
+wandb_log_dir_base: logs/wandb
+
+# Algorithm names
+offline_alg_name: iql  # Offline algorithm name (iql, bc, sac)
+online_alg_name: sac  # Online algorithm name (sac, iql, bc)
+
+# Debug mode
+debug: false
+
+# Evaluation parameters
+eval_freq: 5000   # Evaluation frequency in rollouts 
+eval_num_episodes: 5  # Number of episodes for evaluation
+eval_record_video: true  # Whether to record videos during evaluation
+eval_at_episode_boundary: true  # If true, only evaluate at episode boundaries (auto-enabled for REMOTE_ROBOT)
+
+# Observation encoding models
+dinov2_model: "facebook/dinov2-small"
+sentence_model: null
+
+
+
+# ENV/LIBERO related parameters
+env_name: "REMOTE_ROBOT"  # LIBERO task suite name, specific to LIBERO
+use_gt_rewards: false  # Use ground truth rewards (default: False). If True, no reward relabeling will be performed. If no reward model is provided, this will be set to True.
+obs_format: "widowx" # "droid" or "widowx"
+dino_image_keys: ["observation.images.image_0"] # keys for dino conversion in DSRL observation
+
+# DSRL related parameters
+noise_dim: 32  # Dimension of noise to predict
+noise_action_bound: 1.0 # Action bound for noise
+
+# Remote Robot Configuration (used when env_name="REMOTE_ROBOT")
+# Works with ngrok/Pinggy tunnels for training on different machines
+remote_robot:
+  host:  "jessezhang.a.pinggy.link" # Robot server hostname (e.g., "0.tcp.ngrok.io", "xyz.a.pinggy.io")
+  port: 14819 # Robot server port
+  connect_timeout: 300.0  # Connection timeout in seconds (5 min default for remote)
+
+
+# Pi0 Configuration
+pi0_checkpoint: ./pi0_lora_bridge_1_cam/pi0_lora_bridge_1_cam/29999  # Path to Pi0 checkpoint (REQUIRED)
+#pi0_checkpoint: ./pi0_bridge/pi0_bridge/pi0_bridge_fft/30000 # Path to Pi0 checkpoint (REQUIRED)
+action_exec_len: 4 # How many actions to execute from chunk

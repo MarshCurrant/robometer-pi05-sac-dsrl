@@ -1,0 +1,18 @@
+#@package _global_
+defaults:
+  - _self_
+  - base
+
+# Transformer Policy Configuration
+transformer:
+  d_model: 256
+  nhead: 8
+  num_encoder_layers: 4
+  transformer_dropout: 0.0
+  transformer_activation: gelu
+  feature_hidden_dims: [512, 512]
+  output_hidden_dims: null
+  use_layer_norm: false
+  activation: relu
+  dropout_rate: 0.0
+

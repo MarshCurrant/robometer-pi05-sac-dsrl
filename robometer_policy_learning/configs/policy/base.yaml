@@ -1,0 +1,8 @@
+# Policy-specific parameters
+log_std_init: 0
+log_std_min: -20.0
+log_std_max: 2.0
+
+# MLP-specific parameters (only used for MLP architecture)
+use_tanh_output: true
+deterministic: false

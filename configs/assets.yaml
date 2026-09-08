@@ -1,0 +1,27 @@
+schema_version: 1
+assets:
+  pi05:
+    repo_id: RLinf/RLinf-Pi05-LIBERO-SFT
+    repo_type: model
+    revision: 45ccfcc4e28634f1576ebf78cab0fbe2fd82432d
+    destination: RLinf-Pi05-LIBERO-SFT
+  robometer:
+    repo_id: robometer/Robometer-4B
+    repo_type: model
+    revision: beef63bc914c5c189329d49c6d712d96d632aa34
+    destination: Robometer-4B
+  qwen:
+    repo_id: Qwen/Qwen3-VL-4B-Instruct
+    repo_type: model
+    revision: ebb281ec70b05090aa6165b016eac8ec08e71b17
+    destination: Qwen3-VL-4B-Instruct
+  dino:
+    repo_id: facebook/dinov2-base
+    repo_type: model
+    revision: f9e44c814b77203eaa57a6bdbbd535f21ede1415
+    destination: dinov2-base
+  libero:
+    repo_id: RLinf/LIBERO-assets
+    repo_type: dataset
+    revision: 3ba78404b48e8c70fa4ac9782d5aac8e5b46d55f
+    destination: LIBERO

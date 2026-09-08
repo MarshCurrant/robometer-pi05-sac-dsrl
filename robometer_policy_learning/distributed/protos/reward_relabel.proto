@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package distributed;
+
+// Import existing definitions
+import "learner.proto";
+
+// Request to relabel rewards for a batch of transitions
+message RelabelRewardsRequest {
+  repeated Transition transitions = 1;
+  // Additional metadata needed for reward relabeling
+  repeated string language_instructions = 2;  // One per transition
+  repeated bytes video_frames = 3;            // Serialized frames arrays (np.save format)
+  repeated bytes dino_embeddings = 4;         // Serialized DINO embeddings (np.save format)
+  repeated bytes text_embeddings = 5;          // Serialized text embeddings (np.save format)
+  // Episode tracking info
+  repeated string episode_ids = 6;             // Episode ID for each transition
+  repeated int32 step_in_episodes = 7;        // Step within episode for each transition
+  // Batch range info (to avoid reprocessing already-computed subsequences)
+  int32 batch_start_idx = 8;                   // Start index of batch within trajectory context (inclusive) - used when batch_indices is empty
+  int32 batch_end_idx = 9;                     // End index of batch within trajectory context (exclusive) - used when batch_indices is empty
+  repeated int32 batch_indices = 10;           // Specific trajectory indices to relabel (for DSRL mode where only some transitions are added to buffer) - overrides batch_start_idx/batch_end_idx if provided
+  int32 trajectory_start_idx = 11;             // 0 = full trajectory; >0 = only use frames from this index (current subtask)
+}
+
+// Progress predictions for a single image key
+message ProgressPredictions {
+  repeated float progress = 1;                // Progress prediction for each transition
+  repeated float success_probs = 2;          // Success probability for each transition (optional)
+}
+
+// Response with relabeled rewards
+message RelabelRewardsResponse {
+  repeated float rewards = 1;                 // Relabeled reward for each transition (aggregated across image keys)
+  repeated float success_probs = 2;           // Success probability for each transition (aggregated, optional, deprecated - use progress_predictions_by_key)
+  bool ok = 3;
+  string message = 4;
+  map<string, ProgressPredictions> progress_predictions_by_key = 5;  // Progress predictions per image key
+}
+
+// Service for reward relabeling
+service RewardRelabelService {
+  // Relabel rewards for a batch of transitions
+  rpc RelabelRewards(RelabelRewardsRequest) returns (RelabelRewardsResponse);
+  
+  // Stream-based relabeling for better throughput
+  rpc StreamRelabelRewards(stream RelabelRewardsRequest) returns (stream RelabelRewardsResponse);
+}
+

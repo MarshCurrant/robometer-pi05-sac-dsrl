@@ -1,0 +1,56 @@
+# DSRL on a remote DROID-format robot with async reward relabeling
+# Uses Robometer/RoboReward gRPC server for automatic progress/success scoring.
+#
+# To run:
+#   1. Start the reward relabel server (see docs/REAL_ROBOT_README.md)
+#   2. Start the robot server on the robot machine (droid_remote_server.py)
+#   3. Run training:
+#        XLA_PYTHON_CLIENT_PREALLOCATE=false uv run python scripts/train_dsrl.py \
+#            --config-name dsrl_remote_robot_async_relabel_config \
+#            logging.wandb_entity=YOUR_ENTITY \
+#            remote_robot.host=YOUR_ROBOT_HOST \
+#            remote_robot.port=YOUR_ROBOT_PORT
+
+defaults:
+  - dsrl_droid_config
+  - _self_
+
+# Environment configuration
+env:
+  # Async reward relabeling configuration
+  use_async_reward_relabel: true
+  reward_relabel_batch_size: 1
+
+# Replay buffer configuration
+buffer:
+  min_relabeled_ratio: 0.1
+  save_buffer_on_exit: true
+  save_buffer_every: 500
+  save_buffer_dir: "replay_buffers"
+  save_buffer_images: true  # WARNING: creates large files
+  save_buffer_image_keys: ["observation/wrist_image_left", "observation/exterior_image_1_left"]
+
+reward_model:
+  async_reward_relabel_server_address: "localhost:50052"
+  success_detection_duration: 1
+  success_detection_threshold: 1.0
+
+# Logging configuration
+logging:
+  wandb_name: train_dsrl_droid_async_relabel
+
+model:
+  dinov2_model: "facebook/dinov2-small"
+  sentence_model: null
+
+# DSRL parameters
+dsrl:
+  noise_action_bound: 1.5
+
+# Evaluation configuration (effectively off for async relabel training to not interrupt training.)
+eval:
+  eval_freq: 1000000000000000
+  eval_num_episodes: 0
+  eval_record_video: true
+  eval_at_episode_boundary: true
+  eval_on_first_step: false

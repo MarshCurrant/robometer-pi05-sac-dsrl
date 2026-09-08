@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package  distributed;
+
+// A generic key-value metadata bag
+message MetaEntry { string key = 1; bytes value = 2; }
+
+message NDArray {
+  // Raw bytes of a numpy array (np.save to BytesIO)
+  bytes data = 1;
+}
+
+message Transition {
+  repeated MetaEntry info = 1;           // arbitrary metadata (robot_id, task, timestamps, etc.)
+  map<string, NDArray> obs = 2;          // dict of observations
+  NDArray action = 3;                    // action array
+  float reward_env = 4;                  // original env reward
+  map<string, NDArray> next_obs = 5;     // next observations
+  bool done = 6;
+  bool truncated = 7;
+  string episode_id = 8;
+  int32 step_in_episode = 9;
+  int64 timestamp_ns = 10;
+}
+
+message TransitionBatch {
+  repeated Transition transitions = 1;
+  repeated MetaEntry meta = 2; // batch-level metadata (e.g., relabel mode)
+}
+
+message Ack {
+  bool ok = 1;
+  string message = 2;
+  uint64 accepted = 3;
+}
+
+message Empty {}
+
+message SizeReply { uint64 size = 1; }
+
+// Ingestion service: robots stream batches of transitions
+service IngestionService {
+  rpc StreamTransitions(stream TransitionBatch) returns (Ack);
+}
+
+// Policy service: robots fetch latest actor weights
+message GetActorRequest { uint64 since_version = 1; }
+message ActorBlob {
+  bytes state_dict = 1; // torch.save(state_dict) bytes
+  uint64 version = 2;   // monotonically increasing version
+  string fingerprint = 3; // sha1 fingerprint of state
+}
+
+service PolicyService {
+  rpc GetActor(GetActorRequest) returns (ActorBlob);
+  // Stream the actor in chunks to handle very large models
+  rpc GetActorStream(GetActorRequest) returns (stream ActorChunk);
+  rpc GetPolicyInfo(Empty) returns (PolicyInfo);
+}
+
+message ActorChunk {
+  bytes data = 1;       // chunk bytes (may be compressed)
+  uint64 version = 2;   // model version
+  int64 total_size = 3; // total bytes of the full payload
+  int32 seq = 4;        // 0-based chunk index
+  int32 num_chunks = 5; // total number of chunks
+  string fingerprint = 6; // sha1 fingerprint (repeated per chunk for simplicity)
+}
+
+message PolicyInfo {
+  repeated string obs_keys = 1;
+  int32 chunk_size = 2;
+  string wandb_run_id = 3;
+  string wandb_project = 4;
+  string wandb_entity = 5;
+}
+
+

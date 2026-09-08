@@ -1,0 +1,32 @@
+defaults:
+  - dsrl_config
+  - override algorithm@online_algorithm: libero_dsrl_sac
+  - override policy@policy: mlp 
+  - override value_function@value_function: mlp
+  - _self_
+
+# Environment configuration
+env:
+  env_name: "libero_90"
+  task_id: 19
+  use_gt_rewards: false
+  max_episode_steps: 400
+  image_keys: ["observation/image"]
+  # Async reward relabeling at environment level (before transitions go to buffer)
+  use_async_reward_relabel: true
+  reward_relabel_batch_size: 8
+
+reward_model:
+  async_reward_relabel_server_address: "localhost:50052"
+  
+# Logging configuration
+logging:
+  wandb_name: train_dsrl_libero_async_relabel
+
+buffer:
+  min_relabeled_ratio: 0.1  # Minimum ratio of relabeled transitions required before sampling
+  save_buffer_on_exit: true  # Save buffer to npz file when training exits or killed (Ctrl+C)
+  save_buffer_every: 1000  # Save buffer every N env steps (0 to disable)
+  save_buffer_dir: "replay_buffer"  # Directory to save buffer files
+  save_buffer_images: true   # WARNING: creates large files! Only enable if you need videos
+  save_buffer_image_keys: ["observation/image"]  # Which image keys to save

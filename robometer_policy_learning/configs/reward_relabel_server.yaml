@@ -1,0 +1,19 @@
+defaults:
+  - _self_
+  - reward_model: robometer
+
+# Server configuration
+server:
+  host: "0.0.0.0"
+  port: 50052
+  max_workers: 8
+  max_msg_mb: 256
+  image_keys: ["observation/image"]  # List of image keys to process (server will use all available from this list)
+  language_key: "prompt"  # Key name for language/text embeddings
+
+# Device configuration
+device: "cuda"  # Will auto-detect if cuda available, else cpu
+
+# Sentence transformer model for converting text to embeddings (optional)
+# If not specified, server will require precomputed text embeddings in observations
+sentence_model: "sentence-transformers/all-MiniLM-L12-v2"  # Sentence transformer model name

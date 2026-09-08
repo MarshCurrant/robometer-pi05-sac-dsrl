@@ -1,0 +1,12 @@
+#@package _global_
+defaults:
+  - _self_
+  - base
+
+# MLP Policy Configuration
+mlp:
+  hidden_dims: [512, 512]
+  activation: relu
+  use_layer_norm: false
+  dropout_rate: 0.0
+
