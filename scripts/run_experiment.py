@@ -8,6 +8,7 @@ import json
 import os
 import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import requests
 from omegaconf import OmegaConf
 
 from robometer_policy_learning.reproducibility import load_experiment_config
+from robometer_policy_learning.runtime_metadata import write_manifest
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,15 +93,33 @@ def main() -> None:
     host = str(cfg.resources.reward_server.host)
     port = int(cfg.resources.reward_server.port)
     server_url = f"http://{host}:{port}"
+    service_dir = Path(tempfile.mkdtemp(prefix=f"robometer_{port}_", dir=service_dir))
+    runtime_manifest = service_dir / "reward_runtime_manifest.json"
+    model_info_path = service_dir / "model_info.json"
+    server_log = None
     try:
         if not args.no_start_server:
-            server_log = service_dir / f"robometer_{port}_{int(time.time())}.log"
-            server_log_handle = server_log.open("w", encoding="utf-8")
+            server_log = service_dir / "server.log"
+            server_log_handle = server_log.open("x", encoding="utf-8")
             reward_env = os.environ.copy()
             reward_env["CUDA_VISIBLE_DEVICES"] = str(cfg.resources.reward_server.gpu)
             reward_env["ROBOMETER_BASE_MODEL_ID"] = os.environ["ROBOMETER_BASE_MODEL"]
             reward_env["HF_HUB_OFFLINE"] = "1"
             reward_env["TRANSFORMERS_OFFLINE"] = "1"
+            subprocess.run(
+                [
+                    str(reward_python),
+                    str(repo_root / "robometer_policy_learning/runtime_metadata.py"),
+                    "--output",
+                    str(runtime_manifest),
+                ],
+                cwd=repo_root,
+                env=reward_env,
+                check=True,
+                timeout=120,
+                stdout=server_log_handle,
+                stderr=subprocess.STDOUT,
+            )
             command = [
                 str(reward_python),
                 "-m",
@@ -123,21 +143,30 @@ def main() -> None:
                 text=True,
             )
             info = wait_for_server(server_url, server)
-            (service_dir / f"robometer_{port}_model_info.json").write_text(
-                json.dumps(info, indent=2) + "\n", encoding="utf-8"
-            )
         else:
             response = requests.get(f"{server_url}/model_info", timeout=10)
             response.raise_for_status()
             info = validate_model_info(response.json())
-            (service_dir / f"robometer_{port}_model_info.json").write_text(
-                json.dumps(info, indent=2) + "\n", encoding="utf-8"
+            write_manifest(
+                runtime_manifest,
+                {
+                    "schema_version": 1,
+                    "status": "unavailable",
+                    "source": "external_server",
+                    "reason": "Launcher did not start this server; its interpreter is unknown.",
+                },
             )
+        write_manifest(model_info_path, info)
 
         policy_env = os.environ.copy()
         policy_env["CUDA_VISIBLE_DEVICES"] = str(cfg.resources.policy_gpu)
         policy_env["HF_HUB_OFFLINE"] = "1"
         policy_env["TRANSFORMERS_OFFLINE"] = "1"
+        policy_env["REWARD_RUNTIME_MANIFEST"] = str(runtime_manifest)
+        policy_env["ROBOMETER_MODEL_INFO_PATH"] = str(model_info_path)
+        policy_env.pop("ROBOMETER_SERVER_LOG_PATH", None)
+        if server_log is not None:
+            policy_env["ROBOMETER_SERVER_LOG_PATH"] = str(server_log)
         command = [str(policy_python), str(repo_root / "scripts/train.py"), "--config", str(args.config)]
         for override in args.set:
             command.extend(["--set", override])

@@ -29,7 +29,10 @@ described endpoint-only history; that description is not reproduced here.
 
 ## SAC contract
 
-- Five critics, with two sampled target critics and minimum reduction.
+- Five critics; two randomly sampled target critics are **averaged** for the TD target.
+  The actor objective uses the separate minimum critic reduction. Do not change the
+  target mean into a minimum as a documentation fix: that would change the algorithm.
+  This is verified against the retained source, not an immutable August source snapshot.
 - Batch size 128; one actor and one critic update per newly collected macro transition.
 - Actor and critic LR `1e-5`; entropy coefficient LR `3e-4`; automatic target entropy `-16`.
 - Low-level gamma 0.99 maps once to macro gamma `0.99^5`.

@@ -136,10 +136,6 @@ class WandbLogger(Logger):
         if not _has_wandb:
             raise ImportError("Wandb is not installed")
         self.logger = wandb.init(**self._wandb_kwargs)
-        if self._metric_allowlist:
-            self.logger.define_metric("env_step")
-            for metric_name in sorted(self._metric_allowlist):
-                self.logger.define_metric(metric_name, step_metric="env_step")
 
     def log_scalar(
         self,
@@ -161,7 +157,8 @@ class WandbLogger(Logger):
         if not self._metric_is_allowed(metric_name):
             return
         if step is not None:
-            self.logger.log({metric_name: value, "env_step": step})
+            axis = metric_name.rsplit("/", 1)[0] + "/step" if "/" in metric_name else "step"
+            self.logger.log({metric_name: value, axis: step})
         else:
             self.logger.log({metric_name: value})
 
@@ -232,7 +229,9 @@ class WandbLogger(Logger):
         # Avoid using wandb's global step kwarg to prevent out-of-order warnings.
         # If a step is provided, log it as a separate metric that users can map via define_metric.
         if step is not None:
-            dictionary["env_step"] = step
+            effective_prefix = prefix if prefix is not None else self.prefix
+            axis = f"{effective_prefix}/step" if effective_prefix else "step"
+            dictionary[axis] = step
         self.logger.log(dictionary, **kwargs)
 
     def log_hparams(self, cfg: dict) -> None:

@@ -64,6 +64,34 @@ def main() -> None:
     for name, path in files.items():
         checks[name] = {"path": str(path), "ok": path.exists()}
 
+    from download_assets import check_snapshot, file_digest
+
+    for name, path in (
+        ("pi05", Path(str(cfg.dsrl.pi05_checkpoint))),
+        ("dino", Path(str(cfg.model.dinov2_model))),
+        ("robometer", asset_env.get("ROBOMETER_MODEL")),
+        ("qwen", asset_env.get("ROBOMETER_BASE_MODEL")),
+        ("libero", asset_env.get("LIBERO_ASSETS")),
+    ):
+        if path is None:
+            continue
+        checked, missing, errors = check_snapshot(name, path)
+        checks[f"asset_completeness/{name}"] = {
+            "checked_files": len(checked), "missing": missing, "errors": errors,
+            "ok": not missing and not errors,
+        }
+    repo_root = Path(__file__).resolve().parents[1]
+    tokenizer_spec = OmegaConf.load(repo_root / "configs/assets.yaml").assets.paligemma
+    tokenizer_path = Path(os.environ.get(
+        "PALIGEMMA_TOKENIZER_PATH",
+        str(Path(os.environ.get("ASSET_ROOT", repo_root / "assets")) / tokenizer_spec.destination),
+    ))
+    actual_digest = file_digest(tokenizer_path) if tokenizer_path.is_file() else None
+    checks["paligemma_tokenizer"] = {
+        "path": str(tokenizer_path), "sha256": actual_digest,
+        "ok": actual_digest == tokenizer_spec.sha256,
+    }
+
     from libero.libero import benchmark
 
     suite = benchmark.get_benchmark_dict()[str(cfg.env.env_name)]()
@@ -86,10 +114,10 @@ def main() -> None:
         "ok": threshold is not None and terminal_threshold is not None,
     }
     metrics = list(cfg.logging.metric_allowlist)
-    effective_metric_count = len(metrics) + 1
+    effective_metric_count = len(metrics)
     checks["wandb_metric_count"] = {
         "allowlisted_metrics": len(metrics),
-        "implicit_axes": ["env_step"],
+        "implicit_axes": sorted({name.rsplit("/", 1)[0] + "/step" for name in metrics}),
         "count": effective_metric_count,
         "ok": effective_metric_count <= 30,
     }

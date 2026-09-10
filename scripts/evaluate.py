@@ -15,7 +15,15 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--episodes", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--evaluation-step", type=int,
+        help="Low-level env step for a legacy final/renamed checkpoint lacking a manifest",
+    )
     args = parser.parse_args()
+    if args.episodes <= 0:
+        parser.error("--episodes must be positive")
+    if args.evaluation_step is not None and args.evaluation_step < 0:
+        parser.error("--evaluation-step must be nonnegative")
     root = Path(__file__).resolve().parents[1]
     python_bin = Path(os.environ.get("PYTHON_BIN", root / ".venv-policy/bin/python"))
     if not python_bin.is_file():
@@ -27,6 +35,8 @@ def main() -> None:
         str(args.config),
         "--set",
         f"training.load_dir={args.checkpoint.resolve()}",
+        "--set",
+        "training.load_mode=evaluate",
         "--set",
         "training.num_rollouts=0",
         "--set",
@@ -40,6 +50,8 @@ def main() -> None:
         "--set",
         "runtime.run_name=eval",
     ]
+    if args.evaluation_step is not None:
+        command.extend(["--set", f"eval.evaluation_step={args.evaluation_step}"])
     raise SystemExit(subprocess.run(command, cwd=root, check=False).returncode)
 
 

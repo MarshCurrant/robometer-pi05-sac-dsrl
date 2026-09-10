@@ -65,7 +65,7 @@ def test_task_extension_inherits_reference_without_hidden_hydra_defaults():
     assert cfg.reward_model.success_detection_threshold is None
 
 
-def test_wandb_allowlist_uses_one_shared_step_axis():
+def test_wandb_preserves_separate_environment_and_optimizer_axes():
     class FakeRun:
         def __init__(self):
             self.rows = []
@@ -75,7 +75,7 @@ def test_wandb_allowlist_uses_one_shared_step_axis():
 
     logger = object.__new__(WandbLogger)
     logger.prefix = None
-    logger._metric_allowlist = {"train/loss"}
+    logger._metric_allowlist = {"train/loss", "online/policy/actor_loss"}
     logger.logger = FakeRun()
 
     logger.log_dict(
@@ -84,4 +84,39 @@ def test_wandb_allowlist_uses_one_shared_step_axis():
         prefix="train",
     )
 
-    assert logger.logger.rows == [({"train/loss": 1.25, "env_step": 17}, {})]
+    logger.log_dict({"actor_loss": 0.5}, step=1, prefix="online/policy")
+    logger.log_scalar("actor_loss", 0.4, step=2, prefix="online/policy")
+    assert logger.logger.rows == [
+        ({"train/loss": 1.25, "train/step": 17}, {}),
+        ({"online/policy/actor_loss": 0.5, "online/policy/step": 1}, {}),
+        ({"online/policy/actor_loss": 0.4, "online/policy/step": 2}, {}),
+    ]
+
+
+def test_allowlist_matches_archived_sf73jk43_history():
+    expected = {
+        "buffer/avg_env_reward", "buffer/avg_predicted_progress_reward",
+        "buffer/avg_total_reward", "buffer/total_size",
+        "eval/avg_steps", "eval/num_eval_episodes", "eval/success_rate",
+        "online/policy/actor_chosen_q_mean", "online/policy/actor_loss",
+        "online/policy/critic_loss", "online/policy/ent_coef",
+        "online/policy/ent_coef_loss", "online/policy/progress_reward_mean",
+        "online/policy/q_values_mean", "online/policy/reward_mean",
+        "online/policy/success_prob_mean", "online/policy/target_q_mean",
+        "online/policy/train_step_total_time_s",
+        "train/ep_avg_env_reward", "train/ep_avg_progress_reward",
+        "train/ep_avg_reward", "train/ep_avg_success_prob",
+        "train/ep_overall_reward", "train/ep_overall_success_rate",
+        "train/ep_overall_training_reward", "train/robometer_detected",
+        "train/robometer_success_head_detected", "train/robometer_terminal_detected",
+        "train/sim_success_once", "train/total_steps",
+    }
+    assert set(load_reference().logging.metric_allowlist) == expected
+
+
+def test_prepare_run_accepts_thirty_data_metrics(tmp_path):
+    from robometer_policy_learning.reproducibility import prepare_run
+    cfg = load_reference()
+    cfg.runtime.output_dir = str(tmp_path / "run")
+    resolved = prepare_run(cfg, source_config=ROOT / "configs/reproduction/sf73jk43.yaml")
+    assert len(resolved.logging.metric_allowlist) == 30

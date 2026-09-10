@@ -1,4 +1,6 @@
 import os
+import json
+from pathlib import Path
 import gymnasium as gym
 from tqdm import tqdm
 from loguru import logger as loguru_logger
@@ -13,9 +15,83 @@ from robometer_policy_learning.rollouts.evaluation_worker import EvaluationWorke
 
 
 class SerialRunner:
-    """
-    A runner that runs the environment and collects data and sends it to the buffer.
-    """
+    """Run the environment, collect data, and send it to the buffer."""
+
+    @staticmethod
+    def validate_checkpoint_load(load_dir, load_mode, *, num_rollouts=None) -> None:
+        """Require an explicit intent; saved algorithm state is not a run snapshot."""
+        if load_mode == "resume":
+            raise ValueError(
+                "resume is unsupported: replay, runner scheduling, simulator/episode "
+                "state and RNG are not restored. Use training.load_mode=warm_start "
+                "for a new collection run, or evaluate for evaluation only."
+            )
+        if load_dir is None and load_mode is None:
+            return
+        if load_mode not in {"warm_start", "evaluate"}:
+            raise ValueError(
+                "Checkpoint loading requires explicit training.load_mode=warm_start "
+                "or evaluate; it cannot resume training."
+            )
+        if load_dir is None:
+            raise ValueError("training.load_mode requires training.load_dir")
+        if load_mode == "evaluate" and num_rollouts is not None and num_rollouts != 0:
+            raise ValueError(
+                "training.load_mode=evaluate requires training.num_rollouts=0; "
+                "use warm_start for training."
+            )
+
+    @staticmethod
+    def load_checkpoint(algorithm, load_dir, *, load_mode=None) -> None:
+        """Load a trusted algorithm checkpoint, never replay or collection counters.
+
+        Both modes restore saved actor/critics, optimizers, entropy and algorithm
+        update counters using the existing loader. Warm starts repeat warmup and
+        start a new zero-based collection/eval/save budget. The legacy .pt files
+        use pickle: explicit mode selection does not make untrusted files safe.
+        """
+        SerialRunner.validate_checkpoint_load(load_dir, load_mode)
+        if load_dir is None:
+            raise ValueError("Checkpoint loading requires training.load_dir")
+        checkpoint_dir = Path(load_dir)
+        required = ["training_state.json"] + [
+            f"{name}.pt" for name in algorithm.component_names if hasattr(algorithm, name)
+        ]
+        missing = [name for name in required if not (checkpoint_dir / name).is_file()]
+        if missing:
+            raise FileNotFoundError(f"Incomplete algorithm checkpoint {checkpoint_dir}: {missing}")
+        loguru_logger.warning(
+            f"Loading trusted checkpoint in {load_mode} mode: algorithm state only; "
+            "replay, collection counters, scheduling, episode state and RNG are NOT restored."
+        )
+        algorithm.load(str(checkpoint_dir))
+
+    @staticmethod
+    def checkpoint_evaluation_step(load_dir, evaluation_step=None) -> int:
+        """Resolve low-level env steps, never the algorithm's training_state.step."""
+        checkpoint_dir = Path(load_dir)
+        manifest_path = checkpoint_dir / "checkpoint_manifest.json"
+        saved_step = None
+        if manifest_path.is_file():
+            saved_step = json.loads(manifest_path.read_text(encoding="utf-8"))["env_steps"]
+            if type(saved_step) is not int or saved_step < 0:
+                raise ValueError(f"Invalid env_steps in {manifest_path}")
+        if evaluation_step is not None:
+            if type(evaluation_step) is not int or evaluation_step < 0:
+                raise ValueError("eval.evaluation_step must be a nonnegative integer")
+            if saved_step is not None and evaluation_step != saved_step:
+                raise ValueError("eval.evaluation_step conflicts with checkpoint manifest env_steps")
+            return evaluation_step
+        if saved_step is not None:
+            return saved_step
+        # Legacy periodic checkpoints use their low-level env step as the folder tag.
+        if checkpoint_dir.name.isdecimal():
+            return int(checkpoint_dir.name)
+        raise ValueError(
+            "Checkpoint has no environment-step evidence. Set eval.evaluation_step "
+            "(--evaluation-step in scripts/evaluate.py) explicitly for legacy final "
+            "or renamed checkpoints; training_state.step is an algorithm counter."
+        )
 
     def __init__(
         self,
@@ -153,7 +229,9 @@ class SerialRunner:
             loguru_logger.info("Running initial evaluation before training...")
             eval_metrics = self.evaluate(self.actor)
             if self.logger is not None:
-                self.logger.log(eval_metrics, step=0, prefix="eval")
+                self.logger.log(
+                    eval_metrics, step=self.eval_kwargs.get("evaluation_step", 0), prefix="eval"
+                )
             self._print_detailed_eval_metrics(eval_metrics)
 
         with tqdm(
@@ -425,6 +503,10 @@ class SerialRunner:
 
     def evaluate(self, actor: BaseActor):
         """Evaluate the actor using the evaluation worker."""
+        if hasattr(self.evaluation_worker, "evaluation_step"):
+            self.evaluation_worker.evaluation_step = self.eval_kwargs.get(
+                "evaluation_step", self.total_env_steps
+            )
         return self.evaluation_worker.run(actor)
 
     def _get_buffer_stats(self) -> dict:
@@ -546,6 +628,20 @@ class SerialRunner:
         checkpoint_dir = os.path.join(self.save_dir, str(tag))
         os.makedirs(checkpoint_dir, exist_ok=True)
         self.algorithm.save(checkpoint_dir)
+        checkpoint_manifest = {
+            "schema_version": 1,
+            "checkpoint_type": "algorithm_warm_start",
+            "resume_supported": False,
+            "supported_load_modes": ["warm_start", "evaluate"],
+            "env_steps": int(self.total_env_steps),
+            "episodes": int(self.total_episodes_completed),
+            "algo_step": getattr(self.algorithm, "step_counter", None),
+            "n_updates": getattr(self.algorithm, "_n_updates", None),
+            "not_restored": ["replay", "runner_counters", "scheduling", "episode_state", "rng"],
+            "metadata": metadata or {},
+        }
+        manifest_path = Path(checkpoint_dir) / "checkpoint_manifest.json"
+        manifest_path.write_text(json.dumps(checkpoint_manifest, indent=2) + "\n", encoding="utf-8")
 
         if self.logger is not None:
             try:

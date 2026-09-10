@@ -156,7 +156,7 @@ Important sections:
 - `online_algorithm`: SAC batch, critics, entropy, discount, update ratio, and optimizers
 - `resources`: policy GPU and RoboMeter server GPU/host/port
 - `eval`: deterministic held-out evaluation frequency and episode count
-- `logging`: W&B destination and a 27-metric allowlist
+- `logging`: W&B destination and the reference 30-data-metric allowlist
 
 `reproduction.recipe_hash` is an output field. Leave it as `pending`; the runner computes it
 from scientific settings. Paths, W&B metadata, and output locations are deliberately excluded.
@@ -188,14 +188,15 @@ reuse task-4 detector thresholds blindly. Calibration must use episode-disjoint 
 
 The task identity check prevents an incorrect task ID/name pair from starting.
 
-## Resume and evaluate
+## Warm-start and evaluate
 
-Resume from an actor/critic checkpoint directory:
+Explicitly warm-start from an actor/critic checkpoint directory:
 
 ```bash
 .venv-policy/bin/python scripts/run_experiment.py \
   --config configs/reproduction/sf73jk43.yaml \
-  --set training.load_dir=/path/to/checkpoints/175000
+  --set training.load_dir=/path/to/checkpoints/175000 \
+  --set training.load_mode=warm_start
 ```
 
 Evaluate 50 procedural-reset episodes without a RoboMeter server:
@@ -208,8 +209,10 @@ source scripts/load_env.sh
   --episodes 50 --seed 1000
 ```
 
-Old `sf73jk43` checkpoints contain model/optimizer/counter state but not replay or environment
-RNG state. Loading one is valid for evaluation; exact mid-run continuation is not claimed.
+Checkpoints contain model/optimizer/algorithm-counter state but not the replay or simulator
+state required for faithful continuation. Warm-start begins a new collection budget and
+warmup, with a new W&B run; it is **not resume**. Exact resume is rejected, not silently
+approximated. Loading weights for evaluation is supported without replay restoration.
 
 ## Outputs
 
@@ -221,9 +224,14 @@ Each run creates `outputs/<name>_<timestamp>/` with:
 - evaluation episode manifests and local logs
 - W&B files when enabled
 
-W&B is limited to 27 core metrics plus one shared `env_step` axis (28 keys total). The central
-outcome is `eval/success_rate`; reward, critic, actor, entropy, detector, replay, and gradient
-diagnostics are retained without uploading video.
+W&B preserves all 30 data metrics found in the archived reference journal, plus its four
+namespace axes: `train/step`, `buffer/step`, `eval/step` (low-level environment steps), and
+`online/policy/step` (optimizer updates). These clocks must not be combined into `env_step`.
+The central outcome is `eval/success_rate`. Train/buffer rows are logged at episode ends;
+online rows are logged at optimizer updates. Binary detector values remain numeric scalars.
+No custom histograms, videos, or dashboard definitions are uploaded. Historical workspace
+panel styles and smoothing were not archived, so exact bar/line UI appearance is not claimed.
+See [the logging contract](docs/wandb_contract.md) for every metric and its meaning.
 
 ## Tests
 
@@ -241,4 +249,3 @@ Project code is MIT licensed. Vendored components retain upstream notices and li
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Cite RoboMeter, RLinf, OpenPI, and LIBERO
 when using the corresponding components. Model weights and simulator assets are downloaded
 from their original repositories and are not covered by this repository's MIT license.
-# robometer-pi05-sac-dsrl

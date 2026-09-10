@@ -17,10 +17,13 @@ from robometer_policy_learning.utils.gpu_utils import convert_to_tensor, move_to
 
 
 class LiberoPi05EvaluationWorker(EvaluationWorker):
-    def __init__(self, *, pi05_policy, action_exec_len: int, **kwargs) -> None:
+    def __init__(
+        self, *, pi05_policy, action_exec_len: int, evaluation_step: int = 0, **kwargs
+    ) -> None:
         super().__init__(**kwargs)
         self.pi05 = pi05_policy
         self.action_exec_len = int(action_exec_len)
+        self.evaluation_step = evaluation_step
 
     def _instruction(self) -> str:
         instruction = self.eval_env.get_language_instruction()
@@ -87,6 +90,9 @@ class LiberoPi05EvaluationWorker(EvaluationWorker):
         )
 
     def _run_evaluations(self, actor, num_episodes: int = 10):
+        evaluation_step = getattr(self, "evaluation_step", 0)
+        if type(evaluation_step) is not int or evaluation_step < 0:
+            raise ValueError("evaluation_step must be a nonnegative integer")
         rewards_all = []
         steps_all = []
         success_all = []
@@ -181,6 +187,7 @@ class LiberoPi05EvaluationWorker(EvaluationWorker):
             success_all.append(success)
             episode_rows.append(
                 {
+                    "evaluation_step": evaluation_step,
                     "episode_index": episode_index,
                     "initial_observation_fingerprint": init_fingerprint,
                     "success": bool(success),
@@ -202,6 +209,7 @@ class LiberoPi05EvaluationWorker(EvaluationWorker):
                 with trajectory_path.open("wb") as handle:
                     pickle.dump(
                         {
+                            "evaluation_step": evaluation_step,
                             "observations": captured_observations,
                             "actions": captured_actions,
                             "infos": captured_infos,
@@ -216,9 +224,20 @@ class LiberoPi05EvaluationWorker(EvaluationWorker):
 
         run_root = os.environ.get("RUN_ROOT")
         if run_root:
-            manifest_path = Path(run_root) / "step0_eval_episodes.jsonl"
+            manifest_path = Path(run_root) / f"step{evaluation_step}_eval_episodes.jsonl"
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            with manifest_path.open("w", encoding="utf-8") as handle:
+            # Re-evaluating the same step must not destroy earlier evidence either.
+            repeat = 0
+            while True:
+                candidate = manifest_path if repeat == 0 else manifest_path.with_name(
+                    f"{manifest_path.stem}_repeat{repeat}.jsonl"
+                )
+                try:
+                    handle = candidate.open("x", encoding="utf-8")
+                    break
+                except FileExistsError:
+                    repeat += 1
+            with handle:
                 for row in episode_rows:
                     handle.write(json.dumps(row, sort_keys=True) + "\n")
 

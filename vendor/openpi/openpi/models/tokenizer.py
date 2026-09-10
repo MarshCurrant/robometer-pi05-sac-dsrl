@@ -1,5 +1,7 @@
+import hashlib
 import logging
 import os
+from pathlib import Path
 
 import jax
 import numpy as np
@@ -11,13 +13,30 @@ import openpi.models.utils.fsq_tokenizer as fsq_tokenizer
 import openpi.shared.download as download
 
 
+_PALIGEMMA_SHA256 = "8986bb4f423f07f8c7f70d0dbe3526fb2316056c17bae71b1ea975e77a168fc6"
+
+
+def _load_paligemma_tokenizer():
+    root = Path(__file__).resolve().parents[4]
+    asset_root = Path(os.environ.get("ASSET_ROOT", root / "assets")).expanduser()
+    path = Path(os.environ.get("PALIGEMMA_TOKENIZER_PATH", asset_root / "paligemma_tokenizer.model")).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Missing local PaliGemma tokenizer: {path}. "
+            "Run scripts/download_assets.py paligemma with the same ASSET_ROOT "
+            "or set PALIGEMMA_TOKENIZER_PATH to the pinned model file."
+        )
+    proto = path.read_bytes()
+    if hashlib.sha256(proto).hexdigest() != _PALIGEMMA_SHA256:
+        raise ValueError(f"PaliGemma tokenizer SHA-256 mismatch: {path}")
+    return sentencepiece.SentencePieceProcessor(model_proto=proto)
+
+
 class PaligemmaTokenizer:
     def __init__(self, max_len: int = 48):
         self._max_len = max_len
 
-        path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
-        with path.open("rb") as f:
-            self._tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
+        self._tokenizer = _load_paligemma_tokenizer()
 
     def tokenize(self, prompt: str, state: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
@@ -52,10 +71,7 @@ class FASTTokenizer:
     def __init__(self, max_len: int = 256, fast_tokenizer_path: str = "physical-intelligence/fast"):
         self._max_len = max_len
 
-        # Download base PaliGemma tokenizer
-        path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
-        with path.open("rb") as f:
-            self._paligemma_tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
+        self._paligemma_tokenizer = _load_paligemma_tokenizer()
 
         # Instantiate FAST tokenizer
         self._fast_tokenizer = AutoProcessor.from_pretrained(fast_tokenizer_path, trust_remote_code=True)
@@ -154,10 +170,7 @@ class BinningTokenizer:
         self._max_len = max_len
         self._n_bins = n_bins
 
-        # Download base PaliGemma tokenizer
-        path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
-        with path.open("rb") as f:
-            self._paligemma_tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
+        self._paligemma_tokenizer = _load_paligemma_tokenizer()
 
         self._fast_skip_tokens = 128  # Skip last 128 tokens in PaliGemma vocab since they are special tokens
 
@@ -290,10 +303,7 @@ class FSQTokenizer:
             lambda params, x: self._fsq_tokenizer.apply({"params": params}, x, method=self._fsq_tokenizer.detokenize)
         )
 
-        # Download base PaliGemma tokenizer
-        path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
-        with path.open("rb") as f:
-            self._paligemma_tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
+        self._paligemma_tokenizer = _load_paligemma_tokenizer()
 
         self._fast_skip_tokens = 128  # Skip last 128 tokens in PaliGemma vocab since they are special tokens
 

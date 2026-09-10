@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import subprocess
+import tarfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -87,6 +89,28 @@ def _git_revision(repo_root: Path) -> dict[str, Any]:
     }
 
 
+def _snapshot_source(repo_root: Path, output_dir: Path) -> dict[str, str]:
+    """Keep the actual worktree, including nonignored new source, for later audits."""
+    try:
+        names = subprocess.check_output(
+            ["git", "-C", str(repo_root), "ls-files", "-z", "--cached",
+             "--others", "--exclude-standard"], stderr=subprocess.DEVNULL,
+        ).decode().split("\0")
+    except (OSError, subprocess.CalledProcessError):
+        return {}
+    checksums = {}
+    with tarfile.open(output_dir / "source_snapshot.tar.gz", "w:gz") as archive:
+        for name in sorted(set(names) - {""}):
+            path = repo_root / name
+            # Do not archive external asset links or locally generated run outputs.
+            if path.is_symlink() or not path.is_file() or output_dir in path.parents:
+                continue
+            checksums[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+            archive.add(path, arcname=name, recursive=False)
+    (output_dir / "source_sha256.json").write_text(json.dumps(checksums, indent=2) + "\n")
+    return checksums
+
+
 def prepare_run(cfg: DictConfig, *, source_config: Path) -> DictConfig:
     """Resolve a YAML recipe, validate it, and persist an immutable run snapshot."""
     cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
@@ -106,10 +130,10 @@ def prepare_run(cfg: DictConfig, *, source_config: Path) -> DictConfig:
     OmegaConf.resolve(cfg)
 
     metrics = list(OmegaConf.select(cfg, "logging.metric_allowlist", default=[]))
-    metric_count = len(metrics) + 1  # one shared env_step axis
+    metric_count = len(metrics)  # namespace step fields are axes, not data metrics
     if metric_count > 30:
         raise ValueError(
-            f"W&B metric schema has {metric_count} entries including env_step; maximum is 30"
+            f"W&B metric schema has {metric_count} data metrics; maximum is 30"
         )
     if len(metrics) != len(set(metrics)):
         raise ValueError("W&B metric allowlist contains duplicate names")
@@ -124,12 +148,35 @@ def prepare_run(cfg: DictConfig, *, source_config: Path) -> DictConfig:
         source_config.read_text(encoding="utf-8"), encoding="utf-8"
     )
     repo_root = Path(__file__).resolve().parents[1]
+    source_checksums = _snapshot_source(repo_root, output_dir)
+    from robometer_policy_learning.runtime_metadata import collect_runtime_metadata
+
+    policy_runtime = collect_runtime_metadata(role="policy")
+    policy_runtime["lock_sha256"] = {
+        name: source_checksums.get(name)
+        for name in ("uv.lock", "environments/reward/requirements.lock")
+    }
+    (output_dir / "policy_runtime.json").write_text(json.dumps(policy_runtime, indent=2) + "\n")
+    for env_key, filename in (
+        ("REWARD_RUNTIME_MANIFEST", "reward_runtime.json"),
+        ("ROBOMETER_MODEL_INFO_PATH", "robometer_model_info.json"),
+    ):
+        source_path = os.environ.get(env_key)
+        if source_path:
+            shutil.copyfile(source_path, output_dir / filename)
+    asset_root = Path(os.environ.get("ASSET_ROOT", repo_root / "assets"))
+    if (asset_root / "asset_manifest.json").is_file():
+        shutil.copyfile(asset_root / "asset_manifest.json", output_dir / "asset_manifest.json")
+    server_log = os.environ.get("ROBOMETER_SERVER_LOG_PATH")
+    if server_log:
+        (output_dir / "robometer_server.log").symlink_to(Path(server_log).resolve())
     provenance = {
         "schema_version": 1,
         "created_at": datetime.now().astimezone().isoformat(),
         "recipe_hash": recipe_hash,
         "source_config": str(source_config.resolve()),
         "repository": _git_revision(repo_root),
+        "source_snapshot_files": len(source_checksums),
         "python": platform.python_version(),
         "platform": platform.platform(),
         "offline": {

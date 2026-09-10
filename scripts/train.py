@@ -42,8 +42,6 @@ from robometer_policy_learning.runners.serial_runner import SerialRunner
 from robometer_policy_learning.utils.training_utils import (
     build_actor_critic_models,
     create_buffer,
-    load_checkpoint,
-    save_checkpoint,
     setup_training,
 )
 
@@ -172,8 +170,28 @@ def _build_reward_semantics_audit(
     }
 
 
+def _checkpoint_options(cfg: DictConfig) -> tuple[str | None, int | None]:
+    """Validate load intent without adding keys to fresh-run scientific configs."""
+    load_dir = OmegaConf.select(cfg, "training.load_dir", default=None)
+    load_mode = OmegaConf.select(cfg, "training.load_mode", default=None)
+    SerialRunner.validate_checkpoint_load(
+        load_dir, load_mode, num_rollouts=cfg.training.num_rollouts
+    )
+    evaluation_step = OmegaConf.select(cfg, "eval.evaluation_step", default=None)
+    if load_mode == "evaluate":
+        if not cfg.eval.eval_on_first_step:
+            raise ValueError("training.load_mode=evaluate requires eval.eval_on_first_step=true")
+        if cfg.eval.eval_num_episodes <= 0:
+            raise ValueError("Evaluation requires eval.eval_num_episodes > 0")
+        evaluation_step = SerialRunner.checkpoint_evaluation_step(load_dir, evaluation_step)
+    elif evaluation_step is not None:
+        raise ValueError("eval.evaluation_step is only allowed with training.load_mode=evaluate")
+    return load_mode, evaluation_step
+
+
 def run(cfg: DictConfig) -> None:
     OmegaConf.resolve(cfg)
+    load_mode, evaluation_step = _checkpoint_options(cfg)
     if not str(cfg.env.env_name).startswith("libero"):
         raise ValueError("train_libero_mlp_pi05_dsrl.py only supports LIBERO environments")
     if cfg.training.num_envs != 1:
@@ -320,7 +338,7 @@ def run(cfg: DictConfig) -> None:
     online_cfg.logger = wandb_logger
     algorithm = SAC(online_cfg)
     if cfg.training.load_dir is not None:
-        load_checkpoint(algorithm, cfg.training.load_dir)
+        SerialRunner.load_checkpoint(algorithm, cfg.training.load_dir, load_mode=load_mode)
 
     rollout_worker = LiberoPi05RobometerRolloutWorker(
         env=env,
@@ -414,11 +432,12 @@ def run(cfg: DictConfig) -> None:
         eval_kwargs={
             "num_episodes": int(cfg.eval.eval_num_episodes),
             "record_video": bool(cfg.eval.eval_record_video),
+            **({"evaluation_step": evaluation_step} if evaluation_step is not None else {}),
         },
         logger=wandb_logger,
         evaluation_worker_class=eval_worker_factory,
         eval_on_first_step=bool(cfg.eval.eval_on_first_step),
-        save_dir=components.save_dir,
+        save_dir=components.save_dir if load_mode != "evaluate" else None,
         save_interval=int(cfg.training.save_interval),
     )
 
@@ -427,9 +446,8 @@ def run(cfg: DictConfig) -> None:
     )
     try:
         runner.run()
-        save_checkpoint(algorithm, components.save_dir, "final")
     except KeyboardInterrupt:
-        save_checkpoint(algorithm, components.save_dir, "interrupted")
+        runner._save_checkpoint("interrupted")
     finally:
         env.close()
         eval_env.close()
@@ -463,6 +481,7 @@ def main() -> None:
     cfg = load_experiment_config(args.config)
     if args.set:
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(args.set))
+    _checkpoint_options(cfg)
     cfg = prepare_run(cfg, source_config=args.config)
     run(cfg)
 

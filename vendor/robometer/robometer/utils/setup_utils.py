@@ -176,6 +176,17 @@ def _checkpoint_has_full_model_shards(checkpoint_path: str) -> bool:
     return (path / "model.safetensors.index.json").exists() or any(path.glob("model*.safetensors"))
 
 
+def _require_checkpoint_heads(model, state_dict) -> None:
+    """Never silently leave inference heads (including biases) randomly initialized."""
+    required = {
+        key for key in model.state_dict()
+        if key.startswith(("progress_head.", "success_head."))
+    }
+    missing = sorted(required - state_dict.keys())
+    if missing:
+        raise ValueError(f"Checkpoint is missing required head tensors: {', '.join(missing)}")
+
+
 def _load_custom_heads_from_safetensors(model: RBM, checkpoint_path: str) -> bool:
     """Load custom RBM heads from a dedicated safetensors file if present."""
     custom_heads_path = Path(checkpoint_path) / "custom_heads.safetensors"
@@ -183,6 +194,7 @@ def _load_custom_heads_from_safetensors(model: RBM, checkpoint_path: str) -> boo
         return False
 
     custom_state = load_file(str(custom_heads_path))
+    _require_checkpoint_heads(model, custom_state)
     model.load_state_dict(custom_state, strict=False)
     logger.info(f"Loaded {len(custom_state)} custom head tensors from {custom_heads_path}")
     return True
@@ -197,7 +209,7 @@ def _load_checkpoint_weights_from_safetensors(
 ) -> None:
     """
     Load checkpoint weights from safetensors files in a checkpoint directory.
-    Includes verification for PEFT adapters and progress_head.
+    Includes verification for PEFT adapters and complete progress/success heads.
 
     This is needed when using Unsloth, as we can't use from_pretrained on checkpoints.
     Instead, we load the base model with Unsloth first, then manually load the checkpoint weights.
@@ -349,7 +361,8 @@ def _load_checkpoint_weights_from_safetensors(
         if remap_strategies:
             logger.debug(f"Remapping strategies used: {dict(list(remap_strategies.items())[:5])}")
 
-    # Load remapped state dict into model with strict=False to handle missing keys
+    _require_checkpoint_heads(model, remapped_state_dict)
+    # Base-model keys may be absent in adapter checkpoints; inference heads may not.
     missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=False)
 
     # Filter missing keys - base model keys are expected for PEFT checkpoints
@@ -399,12 +412,8 @@ def _load_checkpoint_weights_from_safetensors(
         f"Loaded: {progress_head_loaded}"
     )
 
-    if not progress_head_loaded:
-        logger.error("Progress head weights did not change after loading checkpoint!")
-        logger.error("This indicates the checkpoint weights were not loaded correctly.")
-        import ipdb
-
-        ipdb.set_trace()  # Breakpoint if progress_head didn't load
+    # Presence is checked above and load_state_dict validates shapes. Equal values
+    # are valid when reloading a checkpoint and are not evidence of a load failure.
 
     # Verify adapter weights loaded correctly only when this helper loads them.
     # If load_adapters=False, PeftModel.from_pretrained has already loaded adapters

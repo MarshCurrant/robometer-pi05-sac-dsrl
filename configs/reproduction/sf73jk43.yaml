@@ -68,6 +68,9 @@ logging:
   wandb_tags: [libero, pi05, sac, dsrl, robometer]
   metric_allowlist:
     - train/ep_overall_reward
+    - train/ep_avg_env_reward
+    - train/ep_avg_reward
+    - train/total_steps
     - train/ep_overall_training_reward
     - train/ep_avg_progress_reward
     - train/ep_avg_success_prob
@@ -77,6 +80,7 @@ logging:
     - train/robometer_success_head_detected
     - train/robometer_terminal_detected
     - buffer/total_size
+    - buffer/avg_env_reward
     - buffer/avg_total_reward
     - buffer/avg_predicted_progress_reward
     - online/policy/actor_loss
@@ -85,15 +89,14 @@ logging:
     - online/policy/target_q_mean
     - online/policy/actor_chosen_q_mean
     - online/policy/ent_coef
-    - online/policy/actor_grad_norm
-    - online/policy/critic_grad_norm
+    - online/policy/ent_coef_loss
+    - online/policy/train_step_total_time_s
     - online/policy/reward_mean
     - online/policy/progress_reward_mean
     - online/policy/success_prob_mean
     - eval/success_rate
-    - eval/avg_reward
     - eval/avg_steps
-    - eval/unique_init_states
+    - eval/num_eval_episodes
 
 alg:
   offline_alg_name: null
